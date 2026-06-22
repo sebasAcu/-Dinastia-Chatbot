@@ -3,7 +3,35 @@
 import { useState } from 'react'
 import Link from 'next/link'
 import { Client } from '@/lib/types'
-import { Phone, Building2, Edit2, Trash2, Wifi } from 'lucide-react'
+import { Phone, Building2, Edit2, Trash2, Wifi, WifiOff, Loader2 } from 'lucide-react'
+import { WaStatus } from '@/lib/types'
+
+function StatusBadge({ status }: { status: WaStatus }) {
+  if (status === 'connected') {
+    return (
+      <div className="flex items-center gap-1 bg-green-500/10 border border-green-500/30 rounded-full px-2 py-0.5 ml-2 shrink-0">
+        <Wifi className="w-3 h-3 text-green-400" />
+        <span className="text-xs text-green-400 font-medium">Activo</span>
+      </div>
+    )
+  }
+  if (status === 'qr_pending' || status === 'connecting' || status === 'reconnecting') {
+    return (
+      <div className="flex items-center gap-1 bg-yellow-500/10 border border-yellow-500/30 rounded-full px-2 py-0.5 ml-2 shrink-0">
+        <Loader2 className="w-3 h-3 text-yellow-400 animate-spin" />
+        <span className="text-xs text-yellow-400 font-medium">
+          {status === 'qr_pending' ? 'QR' : 'Conectando'}
+        </span>
+      </div>
+    )
+  }
+  return (
+    <div className="flex items-center gap-1 bg-slate-700/50 border border-slate-600 rounded-full px-2 py-0.5 ml-2 shrink-0">
+      <WifiOff className="w-3 h-3 text-slate-400" />
+      <span className="text-xs text-slate-400 font-medium">Inactivo</span>
+    </div>
+  )
+}
 
 interface Props {
   client: Client
@@ -39,10 +67,7 @@ export default function ClientCard({ client, onDelete }: Props) {
             </div>
           )}
         </div>
-        <div className="flex items-center gap-1 bg-green-500/10 border border-green-500/30 rounded-full px-2 py-0.5 ml-2 shrink-0">
-          <Wifi className="w-3 h-3 text-green-400" />
-          <span className="text-xs text-green-400 font-medium">Activo</span>
-        </div>
+        <StatusBadge status={client.wa_status} />
       </div>
 
       {/* WhatsApp number */}

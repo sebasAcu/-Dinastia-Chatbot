@@ -1,3 +1,5 @@
+export type WaStatus = 'disconnected' | 'connecting' | 'qr_pending' | 'connected' | 'reconnecting'
+
 export interface Client {
   id: string
   created_at: string
@@ -17,6 +19,7 @@ export interface Client {
   escalate_number: string
   escalate_message: string
   logs_enabled: boolean
+  wa_status: WaStatus
 }
 
 export type ClientFormData = Omit<Client, 'id' | 'created_at' | 'updated_at'>

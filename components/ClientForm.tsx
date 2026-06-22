@@ -201,30 +201,10 @@ export default function ClientForm({ client }: Props) {
       </Section>
 
       {/* API */}
-      <Section title="Credenciales API">
-        <Field
-          label="WhatsApp Token"
-          hint="Token de acceso permanente desde Meta Business Suite"
-        >
-          <SecretInput
-            value={form.whatsapp_token}
-            onChange={v => set('whatsapp_token', v)}
-            placeholder="EAAxxxxxxxx..."
-          />
-        </Field>
-        <Field
-          label="Phone Number ID"
-          hint="ID del número en Meta → WhatsApp → Configuration"
-        >
-          <TextInput
-            value={form.phone_number_id}
-            onChange={e => set('phone_number_id', e.target.value)}
-            placeholder="123456789012345"
-          />
-        </Field>
+      <Section title="Inteligencia Artificial">
         <Field
           label="Groq API Key"
-          hint="Obtén tu clave gratis en console.groq.com"
+          hint="Obtén tu clave gratis en console.groq.com — usa el modelo llama-3.1-8b-instant"
         >
           <SecretInput
             value={form.groq_api_key}
