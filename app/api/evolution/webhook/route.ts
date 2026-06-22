@@ -36,7 +36,14 @@ const MEDIA_CATALOG = [
   {
     name: 'Motor de cadena',
     keywords: ['cadena', 'cadenas', 'motor cadena'],
-    fileIds: [],
+    fileIds: [
+      '14bOwFq7nQInTcOQfN1aY1nKlmNL_X8IJ',
+      '16X0LmyGYS1orwQGW1RYAtW1HBFiOCe88',
+      '1iqOWkry339qiYQJSTBEUZY8Vk9tVi7Qf',
+      '1iTLjAD9K7BGCB_dHermAPe-OJ1Lv4aoS',
+      '1kmFdpIINnqyPSzuKsWmfq8NkyWR11UWL',
+      '1qUB8LauekyxTzOHEHjzBcJF6YZPXxjmY',
+    ],
   },
   {
     name: 'Motor para cremallera corredizo',
