@@ -4,10 +4,74 @@ import { supabase } from '@/lib/supabase'
 const EVOLUTION_URL = process.env.EVOLUTION_API_URL || ''
 const EVOLUTION_KEY = process.env.EVOLUTION_API_KEY || ''
 
-// Contactos en modo "toma humana" (dueño respondió manualmente)
-// instanceName -> Map<contactJid, timestamp>
 const humanTakeover = new Map<string, Map<string, number>>()
 const SILENCE_MS = 30 * 60 * 1000
+
+// ── Catálogo de videos por categoría ───────────────────────
+const MEDIA_CATALOG = [
+  {
+    name: 'Elevador',
+    keywords: ['elevador', 'elevadores', 'ascensor', 'plataforma elevadora'],
+    fileIds: [
+      '11xocVABPS0ZQVuv4rIhDdMB4AXPnnQzE',
+      '18QQhUX7crMmc-9SpH81SamuNpvERoENA',
+      '1EbFIToBEfvKE-Tdalkv3v-FNdgPWRw04',
+      '1GiAgscKijfs3VvdxxZRLEKQla8pK2F8h',
+      '1sKHKCWJ_pdRlnZwRhw_LZVEPom7XkieO',
+      '1zCKsxvqYRLCJjLRnmyCt9OgN1s1hXc59',
+    ],
+  },
+  {
+    name: 'Motor de pistón',
+    keywords: ['pistón', 'piston', 'abatible', 'abatibles', 'batiente'],
+    fileIds: [
+      '1EbFI7l4Rq1kpu0Aecvhhjy9hiVP3YOOf',
+      '1F08Oi0V5LygKbrKhFg0ZrqgjX6B5BHHL',
+      '1F8x2gx9gDQkwAwR1nFubZrtQ1_B15aBF',
+      '1hmQKXgSjCQHXoQObPAhCgSNXZ888ffgR',
+      '1kxt8OW3IXuAGFoL6aTnKSmx_4yqG9cx_',
+      '1pviZn6B0PXJ7izxoQJoUAw5ArZlCLsvy',
+    ],
+  },
+  {
+    name: 'Motor de cadena',
+    keywords: ['cadena', 'cadenas', 'motor cadena'],
+    fileIds: [],
+  },
+  {
+    name: 'Motor para cremallera corredizo',
+    keywords: ['cremallera', 'corredizo', 'corredera', 'deslizante', 'corrediza'],
+    fileIds: [
+      '13uxFd9SDcPkrM6dWdxD9MbRACeaklFvf',
+      '1D4JD3RWe5FX7C4lgKNCNL7uMB2nVGcJ1',
+      '1IXa4p9O6G866C4pNBuCO4c9X4ScEFrYc',
+      '1iZtRhekpw_M1KEIls1k58wZFKumV1BGm',
+      '1p76k5wSyi3XAO6KMcKrIBzrdXhCRmT-K',
+      '1w2Q9e6QPT2MzhlDgC-ffyDVQ6EJX0hDy',
+    ],
+  },
+  {
+    name: 'Seccionales americanos',
+    keywords: ['seccional', 'seccionales', 'americano', 'americanos', 'americanas', 'seccionable'],
+    fileIds: [
+      '1b2fyCPamE4EhTr7ezZ5KlqUxM406Z6kY',
+      '1CAbt3K6htZjGlxl4hGGAH9TIVlpaTreG',
+      '1fLkxyh0xjg-8fMzCk4vi0jdVeYCf-mMJ',
+      '1g5P984rx3Ypq6Puf98itc1KtOTpmJ77X',
+      '1I1uGijeBXW6zObGNN_XGle-jz3SWS3QX',
+      '1ItrKlUF0fVLSztMZIzymFmBY4LUhDqw5',
+    ],
+  },
+]
+
+function detectCategory(text: string) {
+  const lower = text.toLowerCase()
+  return MEDIA_CATALOG.find(cat =>
+    cat.keywords.some(kw => lower.includes(kw))
+  ) ?? null
+}
+
+// ── Helpers ─────────────────────────────────────────────────
 
 function recordHumanReply(instance: string, jid: string) {
   if (!humanTakeover.has(instance)) humanTakeover.set(instance, new Map())
@@ -27,13 +91,27 @@ function isSilenced(instance: string, jid: string): boolean {
 async function sendMessage(instance: string, jid: string, text: string) {
   await fetch(`${EVOLUTION_URL}/message/sendText/${instance}`, {
     method: 'POST',
-    headers: {
-      apikey: EVOLUTION_KEY,
-      'Content-Type': 'application/json',
-    },
+    headers: { apikey: EVOLUTION_KEY, 'Content-Type': 'application/json' },
     body: JSON.stringify({ number: jid, text }),
   })
 }
+
+async function sendVideo(instance: string, jid: string, fileId: string) {
+  await fetch(`${EVOLUTION_URL}/message/sendMedia/${instance}`, {
+    method: 'POST',
+    headers: { apikey: EVOLUTION_KEY, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      number: jid,
+      mediatype: 'video',
+      mimetype: 'video/mp4',
+      media: `https://drive.google.com/uc?export=download&id=${fileId}&confirm=t`,
+      fileName: 'video.mp4',
+      caption: '',
+    }),
+  })
+}
+
+// ── POST handler ─────────────────────────────────────────────
 
 export async function POST(req: NextRequest) {
   try {
@@ -48,7 +126,6 @@ export async function POST(req: NextRequest) {
     const fromMe: boolean = data?.key?.fromMe
     const jid: string = data?.key?.remoteJid
 
-    // Dueño respondió manualmente → silenciar bot 30 min con ese contacto
     if (fromMe) {
       recordHumanReply(instance, jid)
       return NextResponse.json({ status: 'human_reply' })
@@ -63,12 +140,11 @@ export async function POST(req: NextRequest) {
 
     if (!text.trim() || !jid) return NextResponse.json({ status: 'empty' })
 
-    // Bot silenciado por toma humana
     if (isSilenced(instance, jid)) {
       return NextResponse.json({ status: 'silenced' })
     }
 
-    // Buscar cliente por evolution_instance
+    // Buscar cliente
     const { data: client, error } = await supabase
       .from('clients')
       .select('*')
@@ -92,7 +168,31 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // Historial de conversación
+    // ── Detección de categoría y envío de videos ──────────────
+    const category = detectCategory(text)
+    if (category) {
+      if (category.fileIds.length > 0) {
+        await sendMessage(instance, jid, `¡Claro! Aquí te muestro nuestros *${category.name}* 👇`)
+        for (const fileId of category.fileIds) {
+          await sendVideo(instance, jid, fileId)
+        }
+        const reply = `En breve Josué te contacta para cotizarte personalmente. 😊\n¿Tienes alguna otra consulta?`
+        await sendMessage(instance, jid, reply)
+
+        if (client.logs_enabled) {
+          await supabase.from('message_logs').insert({
+            client_id: client.id,
+            from_number: jid,
+            user_message: text,
+            bot_response: `[Videos enviados: ${category.name}]`,
+            status: 'sent',
+          })
+        }
+        return NextResponse.json({ status: 'media_sent', category: category.name })
+      }
+    }
+
+    // ── Respuesta con Groq ────────────────────────────────────
     const { data: history } = await supabase
       .from('message_logs')
       .select('user_message, bot_response')
@@ -108,7 +208,6 @@ export async function POST(req: NextRequest) {
         { role: 'assistant', content: log.bot_response },
       ])
 
-    // Llamar a Groq
     const groqRes = await fetch('https://api.groq.com/openai/v1/chat/completions', {
       method: 'POST',
       headers: {
@@ -133,10 +232,8 @@ export async function POST(req: NextRequest) {
       reply = groqData.choices?.[0]?.message?.content || reply
     }
 
-    // Enviar respuesta
     await sendMessage(instance, jid, reply)
 
-    // Guardar log
     if (client.logs_enabled) {
       await supabase.from('message_logs').insert({
         client_id: client.id,
