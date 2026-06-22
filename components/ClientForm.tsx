@@ -23,6 +23,7 @@ const DEFAULTS: ClientFormData = {
   escalate_number: '',
   escalate_message: 'Te vamos a conectar con un agente humano que te ayudará enseguida.',
   logs_enabled: true,
+  evolution_instance: '',
 }
 
 // ── Sub-components ─────────────────────────────────────────
@@ -136,6 +137,7 @@ export default function ClientForm({ client }: Props) {
           escalate_number: client.escalate_number,
           escalate_message: client.escalate_message,
           logs_enabled: client.logs_enabled,
+          evolution_instance: client.evolution_instance || '',
         }
       : DEFAULTS
   )
@@ -201,10 +203,20 @@ export default function ClientForm({ client }: Props) {
       </Section>
 
       {/* API */}
-      <Section title="Inteligencia Artificial">
+      <Section title="Conexión WhatsApp + IA">
+        <Field
+          label="Instancia Evolution API"
+          hint="Nombre exacto de la instancia en tu panel de Evolution API (ej: portones-yireh)"
+        >
+          <TextInput
+            value={form.evolution_instance}
+            onChange={e => set('evolution_instance', e.target.value)}
+            placeholder="nombre-de-instancia"
+          />
+        </Field>
         <Field
           label="Groq API Key"
-          hint="Obtén tu clave gratis en console.groq.com — usa el modelo llama-3.1-8b-instant"
+          hint="Obtén tu clave gratis en console.groq.com"
         >
           <SecretInput
             value={form.groq_api_key}

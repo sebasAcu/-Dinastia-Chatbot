@@ -20,6 +20,7 @@ export interface Client {
   escalate_message: string
   logs_enabled: boolean
   wa_status: WaStatus
+  evolution_instance: string
 }
 
 export type ClientFormData = Omit<Client, 'id' | 'created_at' | 'updated_at'>
