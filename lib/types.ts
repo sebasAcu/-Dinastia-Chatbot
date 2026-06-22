@@ -23,4 +23,4 @@ export interface Client {
   evolution_instance: string
 }
 
-export type ClientFormData = Omit<Client, 'id' | 'created_at' | 'updated_at'>
+export type ClientFormData = Omit<Client, 'id' | 'created_at' | 'updated_at' | 'wa_status' | 'baileys_session'>
