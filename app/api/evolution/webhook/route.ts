@@ -284,7 +284,7 @@ export async function POST(req: NextRequest) {
 
     const historyMessages = history.reverse().flatMap((log) => [
       { role: 'user', content: log.user_message },
-      { role: 'assistant', content: log.bot_response },
+      { role: 'assistant', content: log.bot_response.replace(/\s*\[Media:\s*[\w\s]+?\]\s*/gi, ' ').trim() },
     ])
 
     // ── Call Groq ────────────────────────────────────────────
