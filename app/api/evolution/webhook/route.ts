@@ -138,13 +138,10 @@ export async function POST(req: NextRequest) {
     }
 
     // Buscar cliente
-    const { data: client, error } = await supabase
-      .from('clients')
-      .select('*')
-      .eq('evolution_instance', instance)
-      .single()
+    const { data: rows, error } = await supabase.rpc('find_client_by_instance', { p_instance: instance })
+    const client = rows?.[0] ?? null
 
-    if (error || !client) {
+    if (error || !client || !client.id) {
       console.error('[Evolution] Cliente no encontrado para instancia:', instance)
       return NextResponse.json({ status: 'client_not_found' })
     }
