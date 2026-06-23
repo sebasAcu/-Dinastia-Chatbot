@@ -7,19 +7,10 @@ export async function GET() {
   const session = await getServerSession(authOptions)
   if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
-  const { data, error } = await supabase
-    .from('clients')
-    .select('id, created_at, updated_at, nombre, tipo_negocio, whatsapp_number, whatsapp_token, phone_number_id, groq_api_key, system_prompt, offhours_enabled, offhours_start, offhours_end, offhours_message, escalate_enabled, escalate_number, escalate_message, logs_enabled, wa_status')
-    .order('created_at', { ascending: false })
+  const { data, error } = await supabase.rpc('list_clients')
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })
-
-  // Fetch evolution_instance separately via RPC to bypass schema cache
-  const { data: full } = await supabase.rpc('list_clients')
-  const instanceMap = new Map((full ?? []).map((r: { id: string; evolution_instance: string }) => [r.id, r.evolution_instance]))
-  const result = (data ?? []).map((c: Record<string, unknown>) => ({ ...c, evolution_instance: instanceMap.get(c.id as string) ?? '' }))
-
-  return NextResponse.json(result)
+  return NextResponse.json(data ?? [])
 }
 
 export async function POST(req: NextRequest) {
