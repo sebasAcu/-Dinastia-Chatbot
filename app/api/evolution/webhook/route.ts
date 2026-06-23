@@ -47,9 +47,9 @@ const MEDIA_CATALOG: Record<string, string[]> = {
   ],
 }
 
-// Regex para detectar tags de media en cualquier formato que use la IA:
-// [SEND_MEDIA:cadena], [ENVIAR_MEDIA: CADENA], [Media: cadena], etc.
-const MEDIA_TAG_REGEX = /\[(?:SEND_MEDIA|ENVIAR_MEDIA|Media)\s*:\s*(\w+)\]/gi
+// Regex para detectar tags de media — soporta categorías con espacios:
+// [ENVIAR_MEDIA: SECCIONAL AMERICANO], [SEND_MEDIA:cadena], [Media: cadena], etc.
+const MEDIA_TAG_REGEX = /\[(?:SEND_MEDIA|ENVIAR_MEDIA|Media)\s*:\s*([\w\s]+?)\s*\]/gi
 
 // ── Helpers ─────────────────────────────────────────────────
 
@@ -213,7 +213,8 @@ export async function POST(req: NextRequest) {
     // Enviar media si la IA lo indicó
     let mediaSent = false
     if (mediaTagMatch) {
-      const categoryKey = mediaTagMatch[1].toLowerCase()
+      // Normalizar: "SECCIONAL AMERICANO" → "seccional", "CADENA" → "cadena"
+      const categoryKey = mediaTagMatch[1].toLowerCase().trim().split(/\s+/)[0]
       const fileIds = MEDIA_CATALOG[categoryKey]
       if (fileIds && fileIds.length > 0) {
         for (const fileId of fileIds) {
