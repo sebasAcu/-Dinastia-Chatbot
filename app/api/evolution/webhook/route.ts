@@ -195,7 +195,7 @@ export async function POST(req: NextRequest) {
       }),
     })
 
-    let rawReply = 'Lo siento, no pude procesar su mensaje en este momento.'
+    let rawReply = 'Buenos días, gracias por comunicarse con Portones Americanos y Elevadores YIREH. En este momento nuestros asesores están atendiendo otras consultas. Le contactaremos a la brevedad posible. 🙏'
     if (groqRes.ok) {
       const groqData = await groqRes.json()
       rawReply = groqData.choices?.[0]?.message?.content || rawReply
