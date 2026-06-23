@@ -21,11 +21,7 @@ export async function POST(req: NextRequest) {
   if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
   const body = await req.json()
-  const { data, error } = await supabase
-    .from('clients')
-    .insert(body)
-    .select()
-    .single()
+  const { data, error } = await supabase.rpc('create_client_full', { p_data: body })
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })
   return NextResponse.json(data, { status: 201 })
