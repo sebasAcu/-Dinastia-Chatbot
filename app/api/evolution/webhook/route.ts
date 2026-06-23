@@ -6,10 +6,7 @@ const SB_URL = process.env.NEXT_PUBLIC_SUPABASE_URL!
 const SB_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY!
 const SB_HEADERS = { apikey: SB_KEY, Authorization: `Bearer ${SB_KEY}`, 'Content-Type': 'application/json' }
 
-const humanTakeover = new Map<string, Map<string, number>>()
-const SILENCE_MS = 30 * 60 * 1000
-
-// ── Catálogo de media por categoría ─────────────────────────
+// ── Media catalog ────────────────────────────────────────────
 const MEDIA_CATALOG: Record<string, string[]> = {
   elevador: [
     '11xocVABPS0ZQVuv4rIhDdMB4AXPnnQzE',
@@ -47,27 +44,135 @@ const MEDIA_CATALOG: Record<string, string[]> = {
   ],
 }
 
-// Regex para detectar tags de media — soporta categorías con espacios:
-// [ENVIAR_MEDIA: SECCIONAL AMERICANO], [SEND_MEDIA:cadena], [Media: cadena], etc.
-const MEDIA_TAG_REGEX = /\[(?:SEND_MEDIA|ENVIAR_MEDIA|Media)\s*:\s*([\w\s]+?)\s*\]/gi
+// ── State-specific prompts ───────────────────────────────────
+function getStateInstructions(estado: string, opcionElegida: string | null): string {
+  switch (estado) {
+    case 'inicio':
+      return `
+ESTADO ACTUAL: INICIO
+Saluda al cliente y muéstrale el menú. Si el cliente ya eligió una opción en este mensaje, incluye la etiqueta de estado correspondiente AL FINAL de tu respuesta.
 
-// ── Helpers ─────────────────────────────────────────────────
+Menú a mostrar:
+"Buenos días/tardes, es un placer poder servirle 😊
+Soy el asistente virtual de Portones Americanos y Elevadores YIREH
+¿En qué le puedo ayudar hoy?
+✅ 1. Portón nuevo
+✅ 2. Motor para portón existente
+✅ 3. Elevador
+✅ 4. Reparación o mantenimiento"
 
-function recordHumanReply(instance: string, jid: string) {
-  if (!humanTakeover.has(instance)) humanTakeover.set(instance, new Map())
-  humanTakeover.get(instance)!.set(jid, Date.now())
-}
+Etiquetas de transición (NUNCA mostrarlas al cliente):
+- Si elige 1 o menciona portón nuevo → [ESTADO: porton_nuevo]
+- Si elige 2 o menciona motor → [ESTADO: motor_tipo]
+- Si elige 3 o menciona elevador → [ESTADO: elevador_uso] [ENVIAR_MEDIA: ELEVADOR]
+- Si elige 4 o menciona reparación o mantenimiento → [ESTADO: reparacion]`
 
-function isSilenced(instance: string, jid: string): boolean {
-  const ts = humanTakeover.get(instance)?.get(jid)
-  if (!ts) return false
-  if (Date.now() - ts > SILENCE_MS) {
-    humanTakeover.get(instance)!.delete(jid)
-    return false
+    case 'porton_nuevo':
+      return `
+ESTADO ACTUAL: PORTÓN NUEVO
+El cliente quiere un portón nuevo. Recolecta estos datos en orden:
+1. Tipo de portón (seccional americano, cortina enrollable, corredizo, abatible)
+2. Ancho del espacio
+3. Alto del espacio
+4. Zona del país
+
+Cuando el cliente mencione "seccional americano", incluye [ENVIAR_MEDIA: SECCIONAL] en esa respuesta (solo una vez).
+Cuando tengas TODOS los datos, resúmelos y di que un asesor contactará pronto. Incluye [ESTADO: finalizado].
+NUNCA mostrar etiquetas al cliente.`
+
+    case 'motor_tipo':
+      return `
+ESTADO ACTUAL: TIPO DE MOTOR
+El cliente quiere un motor para portón existente. Pregúntale qué tipo de portón tiene:
+- Corredizo (desliza horizontalmente) → Motor de Cremallera
+- Seccional americano (abre hacia arriba) → Motor de Cadena
+- Abatible (2 hojas hacia afuera) → Motor de Pistón
+
+Cuando el cliente especifique el tipo, incluye AL FINAL (invisible para el cliente):
+- Si es corredizo → [ESTADO: motor_datos] [OPCION: corredizo] [ENVIAR_MEDIA: CREMALLERA]
+- Si es seccional → [ESTADO: motor_datos] [OPCION: seccional] [ENVIAR_MEDIA: CADENA]
+- Si es abatible → [ESTADO: motor_datos] [OPCION: abatible] [ENVIAR_MEDIA: PISTON]`
+
+    case 'motor_datos':
+      return `
+ESTADO ACTUAL: DATOS DEL MOTOR
+El cliente tiene un portón ${opcionElegida || 'existente'}. Recolecta:
+1. Ancho del portón
+2. Si puede desplazarlo con un solo brazo
+3. Zona del país
+
+Cuando tengas TODOS los datos, resúmelos y di que un asesor contactará pronto. Incluye [ESTADO: finalizado].
+NUNCA mostrar etiquetas al cliente.`
+
+    case 'elevador_uso':
+      return `
+ESTADO ACTUAL: USO DEL ELEVADOR
+El cliente está interesado en un elevador. Pregúntale el uso:
+- Carga
+- Residencial
+- Requisito Ley 7600 (accesibilidad)
+
+Cuando el cliente especifique el uso, incluye AL FINAL:
+- Si es carga → [ESTADO: elevador_datos] [OPCION: carga]
+- Si es residencial → [ESTADO: elevador_datos] [OPCION: residencial]
+- Si es ley 7600 → [ESTADO: elevador_datos] [OPCION: ley7600]
+NUNCA mostrar etiquetas al cliente.`
+
+    case 'elevador_datos': {
+      const uso = opcionElegida || 'carga'
+      const preguntas = uso === 'carga'
+        ? `- Cuántos pisos va a subir\n- Con cuánto peso lo van a cargar\n- Dimensiones de la carga más grande\n- Cuántas veces al día se va a accionar\n- Zona del país`
+        : `- Cuántos pisos necesita\n- Dimensiones aproximadas de la plataforma\n- Zona del país`
+      return `
+ESTADO ACTUAL: DATOS DEL ELEVADOR (${uso.toUpperCase()})
+Recolecta los siguientes datos:
+${preguntas}
+
+Cuando tengas TODOS los datos, resúmelos y di que un asesor contactará pronto. Incluye [ESTADO: finalizado].
+NUNCA mostrar etiquetas al cliente.`
+    }
+
+    case 'reparacion':
+      return `
+ESTADO ACTUAL: REPARACIÓN O MANTENIMIENTO
+Recolecta:
+1. Tipo de portón o elevador
+2. Zona del país
+
+Cuando tengas los datos, resúmelos y di que un asesor contactará pronto. Incluye [ESTADO: finalizado].
+NUNCA mostrar etiquetas al cliente.`
+
+    default:
+      return ''
   }
-  return true
 }
 
+// ── Supabase helpers ─────────────────────────────────────────
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function getConvState(chatId: string, clientId: string): Promise<any> {
+  const r = await fetch(
+    `${SB_URL}/rest/v1/conversation_states?chat_id=eq.${encodeURIComponent(chatId)}&client_id=eq.${clientId}&limit=1`,
+    { headers: SB_HEADERS, cache: 'no-store' }
+  )
+  if (!r.ok) return null
+  const rows = await r.json()
+  return rows?.[0] ?? null
+}
+
+async function upsertConvState(chatId: string, clientId: string, data: Record<string, unknown>) {
+  await fetch(`${SB_URL}/rest/v1/conversation_states`, {
+    method: 'POST',
+    headers: { ...SB_HEADERS, Prefer: 'resolution=merge-duplicates,return=minimal' },
+    body: JSON.stringify({
+      chat_id: chatId,
+      client_id: clientId,
+      ...data,
+      updated_at: new Date().toISOString(),
+    }),
+  })
+}
+
+// ── Evolution helpers ────────────────────────────────────────
 async function sendMessage(instance: string, jid: string, text: string) {
   await fetch(`${EVOLUTION_URL}/message/sendText/${instance}`, {
     method: 'POST',
@@ -92,11 +197,9 @@ async function sendMedia(instance: string, jid: string, fileId: string) {
 }
 
 // ── POST handler ─────────────────────────────────────────────
-
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json()
-
     const event = body?.event
     const instance: string = body?.instance
     const data = body?.data
@@ -106,8 +209,24 @@ export async function POST(req: NextRequest) {
     const fromMe: boolean = data?.key?.fromMe
     const jid: string = data?.key?.remoteJid
 
+    // ── Find client ──────────────────────────────────────────
+    const cols = 'id,nombre,groq_api_key,system_prompt,offhours_enabled,offhours_start,offhours_end,offhours_message,logs_enabled,evolution_instance'
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let client: any = null
+    const r1 = await fetch(
+      `${SB_URL}/rest/v1/clients?select=${cols}&evolution_instance=eq.${encodeURIComponent(instance)}&limit=1`,
+      { headers: SB_HEADERS, cache: 'no-store' }
+    )
+    if (r1.ok) { const rows = await r1.json(); client = rows?.[0] ?? null }
+    if (!client) {
+      const r2 = await fetch(`${SB_URL}/rest/v1/clients?select=${cols}&limit=1`, { headers: SB_HEADERS, cache: 'no-store' })
+      if (r2.ok) { const rows = await r2.json(); if (rows?.[0]) client = rows[0] }
+    }
+    if (!client?.id) return NextResponse.json({ status: 'client_not_found' })
+
+    // ── Human reply → pause conversation ────────────────────
     if (fromMe) {
-      recordHumanReply(instance, jid)
+      if (jid) await upsertConvState(jid, client.id, { estado: 'pausado' })
       return NextResponse.json({ status: 'human_reply' })
     }
 
@@ -120,35 +239,7 @@ export async function POST(req: NextRequest) {
 
     if (!text.trim() || !jid) return NextResponse.json({ status: 'empty' })
 
-    if (isSilenced(instance, jid)) {
-      return NextResponse.json({ status: 'silenced' })
-    }
-
-    // Buscar cliente por evolution_instance via REST directo
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    let client: any = null
-    const cols = 'id,nombre,groq_api_key,system_prompt,offhours_enabled,offhours_start,offhours_end,offhours_message,escalate_enabled,escalate_number,escalate_message,logs_enabled,evolution_instance'
-    const r1 = await fetch(`${SB_URL}/rest/v1/clients?select=${cols}&evolution_instance=eq.${encodeURIComponent(instance)}&limit=1`, { headers: SB_HEADERS, cache: 'no-store' })
-    if (r1.ok) {
-      const rows = await r1.json()
-      client = rows?.[0] ?? null
-    }
-
-    if (!client) {
-      // Fallback: primer cliente disponible
-      const r2 = await fetch(`${SB_URL}/rest/v1/clients?select=${cols}&limit=1`, { headers: SB_HEADERS, cache: 'no-store' })
-      if (r2.ok) {
-        const rows = await r2.json()
-        if (rows?.[0]) client = rows[0]
-      }
-    }
-
-    if (!client || !client.id) {
-      console.error('[Evolution] Cliente no encontrado para instancia:', instance)
-      return NextResponse.json({ status: 'client_not_found' })
-    }
-
-    // Horario de atención
+    // ── Off-hours ────────────────────────────────────────────
     if (client.offhours_enabled) {
       const now = new Date()
       const total = now.getUTCHours() * 60 + now.getUTCMinutes()
@@ -160,29 +251,46 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // Historial de conversación
+    // ── Conversation state ───────────────────────────────────
+    let convState = await getConvState(jid, client.id)
+    if (!convState) {
+      await upsertConvState(jid, client.id, {
+        estado: 'inicio',
+        opcion_elegida: null,
+        media_enviada: false,
+        datos_recolectados: {},
+      })
+      convState = { estado: 'inicio', opcion_elegida: null, media_enviada: false }
+    }
+
+    const { estado, opcion_elegida, media_enviada } = convState
+
+    // Don't respond if paused or finished
+    if (estado === 'pausado' || estado === 'finalizado') {
+      return NextResponse.json({ status: `skipped_${estado}` })
+    }
+
+    // ── Build system prompt ──────────────────────────────────
+    const stateInstructions = getStateInstructions(estado, opcion_elegida)
+    const systemPrompt = (client.system_prompt || 'Eres un asistente útil.') + stateInstructions
+
+    // ── Conversation history ─────────────────────────────────
     let history: { user_message: string; bot_response: string }[] = []
     const rh = await fetch(
-      `${SB_URL}/rest/v1/message_logs?select=user_message,bot_response&client_id=eq.${client.id}&from_number=eq.${encodeURIComponent(jid)}&order=created_at.desc&limit=8`,
+      `${SB_URL}/rest/v1/message_logs?select=user_message,bot_response&client_id=eq.${client.id}&from_number=eq.${encodeURIComponent(jid)}&order=created_at.desc&limit=6`,
       { headers: SB_HEADERS, cache: 'no-store' }
     )
     if (rh.ok) history = await rh.json()
 
-    const historyMessages = history
-      .reverse()
-      .flatMap((log) => [
-        { role: 'user', content: log.user_message },
-        { role: 'assistant', content: log.bot_response },
-      ])
+    const historyMessages = history.reverse().flatMap((log) => [
+      { role: 'user', content: log.user_message },
+      { role: 'assistant', content: log.bot_response },
+    ])
 
-    const systemPrompt = client.system_prompt || 'Eres un asistente útil.'
-
+    // ── Call Groq ────────────────────────────────────────────
     const groqRes = await fetch('https://api.groq.com/openai/v1/chat/completions', {
       method: 'POST',
-      headers: {
-        Authorization: `Bearer ${client.groq_api_key}`,
-        'Content-Type': 'application/json',
-      },
+      headers: { Authorization: `Bearer ${client.groq_api_key}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({
         model: 'llama-3.1-8b-instant',
         messages: [
@@ -201,22 +309,26 @@ export async function POST(req: NextRequest) {
       rawReply = groqData.choices?.[0]?.message?.content || rawReply
     }
 
-    // Detectar tag de media en cualquier formato que use la IA
-    MEDIA_TAG_REGEX.lastIndex = 0
-    const mediaTagMatch = MEDIA_TAG_REGEX.exec(rawReply)
-    MEDIA_TAG_REGEX.lastIndex = 0
-    const cleanReply = rawReply.replace(MEDIA_TAG_REGEX, '').trim()
+    // ── Parse tags ───────────────────────────────────────────
+    const mediaTagMatch = /\[(?:SEND_MEDIA|ENVIAR_MEDIA|Media)\s*:\s*([\w\s]+?)\s*\]/i.exec(rawReply)
+    const stateTagMatch = /\[ESTADO:\s*(\w+)\s*\]/i.exec(rawReply)
+    const opcionTagMatch = /\[OPCION:\s*([\w\s]+?)\s*\]/i.exec(rawReply)
 
-    // Enviar texto primero
+    const cleanReply = rawReply
+      .replace(/\[(?:SEND_MEDIA|ENVIAR_MEDIA|Media)\s*:\s*[\w\s]+?\s*\]/gi, '')
+      .replace(/\[ESTADO:\s*\w+\s*\]/gi, '')
+      .replace(/\[OPCION:\s*[\w\s]+?\s*\]/gi, '')
+      .trim()
+
+    // ── Send text ────────────────────────────────────────────
     await sendMessage(instance, jid, cleanReply)
 
-    // Enviar media si la IA lo indicó
+    // ── Send media (only once per conversation) ──────────────
     let mediaSent = false
-    if (mediaTagMatch) {
-      // Normalizar: "SECCIONAL AMERICANO" → "seccional", "CADENA" → "cadena"
+    if (mediaTagMatch && !media_enviada) {
       const categoryKey = mediaTagMatch[1].toLowerCase().trim().split(/\s+/)[0]
       const fileIds = MEDIA_CATALOG[categoryKey]
-      if (fileIds && fileIds.length > 0) {
+      if (fileIds?.length > 0) {
         for (const fileId of fileIds) {
           await sendMedia(instance, jid, fileId)
         }
@@ -224,7 +336,17 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // Guardar log
+    // ── Update conversation state ────────────────────────────
+    const stateUpdates: Record<string, unknown> = {}
+    if (stateTagMatch) stateUpdates.estado = stateTagMatch[1].toLowerCase()
+    if (opcionTagMatch) stateUpdates.opcion_elegida = opcionTagMatch[1].toLowerCase().trim()
+    if (mediaSent) stateUpdates.media_enviada = true
+
+    if (Object.keys(stateUpdates).length > 0) {
+      await upsertConvState(jid, client.id, stateUpdates)
+    }
+
+    // ── Log ──────────────────────────────────────────────────
     if (client.logs_enabled) {
       await fetch(`${SB_URL}/rest/v1/message_logs`, {
         method: 'POST',
@@ -239,7 +361,7 @@ export async function POST(req: NextRequest) {
       })
     }
 
-    return NextResponse.json({ status: 'ok', media: mediaSent ? mediaTagMatch![1] : null })
+    return NextResponse.json({ status: 'ok', estado: stateUpdates.estado || estado })
   } catch (err) {
     console.error('[Evolution] Error:', err)
     return NextResponse.json({ status: 'error' }, { status: 500 })
