@@ -7,8 +7,7 @@ export async function GET() {
   const session = await getServerSession(authOptions)
   if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
-  const cols = 'id, created_at, updated_at, nombre, tipo_negocio, whatsapp_number, groq_api_key, system_prompt, offhours_enabled, offhours_start, offhours_end, offhours_message, escalate_enabled, escalate_number, escalate_message, logs_enabled'
-  const { data, error } = await supabase.from('clients').select(cols).order('created_at', { ascending: false })
+  const { data, error } = await supabase.rpc('list_clients')
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })
   return NextResponse.json(data ?? [])
