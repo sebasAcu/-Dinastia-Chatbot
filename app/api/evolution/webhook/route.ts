@@ -137,11 +137,22 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ status: 'silenced' })
     }
 
-    // Buscar cliente
-    const { data: rows, error } = await supabase.rpc('find_client_by_instance', { p_instance: instance })
-    const client = rows?.[0] ?? null
+    // Buscar cliente — primero por RPC, luego fallback sin filtro de instancia
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let client: any = null
+    const { data: rows } = await supabase.rpc('find_client_by_instance', { p_instance: instance })
+    client = rows?.[0] ?? null
 
-    if (error || !client || !client.id) {
+    if (!client) {
+      const { data: fallback } = await supabase
+        .from('clients')
+        .select('id, nombre, groq_api_key, system_prompt, offhours_enabled, offhours_start, offhours_end, offhours_message, escalate_enabled, escalate_number, escalate_message, logs_enabled, wa_status')
+        .limit(1)
+        .single()
+      if (fallback) client = { ...fallback, evolution_instance: instance }
+    }
+
+    if (!client || !client.id) {
       console.error('[Evolution] Cliente no encontrado para instancia:', instance)
       return NextResponse.json({ status: 'client_not_found' })
     }
