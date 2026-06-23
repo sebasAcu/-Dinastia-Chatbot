@@ -284,7 +284,8 @@ export async function POST(req: NextRequest) {
 
     const historyMessages = history.reverse().flatMap((log) => [
       { role: 'user', content: log.user_message },
-      { role: 'assistant', content: log.bot_response },
+      // Strip [Media: xxx] suffixes so the AI doesn't re-trigger media tags from history
+      { role: 'assistant', content: log.bot_response.replace(/\[Media:\s*[\w\s]+?\]/gi, '').trim() },
     ])
 
     // ── Call Groq ────────────────────────────────────────────
@@ -323,9 +324,13 @@ export async function POST(req: NextRequest) {
     // ── Send text ────────────────────────────────────────────
     await sendMessage(instance, jid, cleanReply)
 
-    // ── Send media (only once per conversation) ──────────────
+    // ── Send media (only once per conversation, never in inicio) ──
+    // Allow media only when transitioning OUT of inicio, or already past it
+    const newState = stateTagMatch?.[1]?.toLowerCase()
+    const allowMedia = estado !== 'inicio' || (!!newState && newState !== 'inicio')
+
     let mediaSent = false
-    if (mediaTagMatch && !media_enviada) {
+    if (mediaTagMatch && !media_enviada && allowMedia) {
       const categoryKey = mediaTagMatch[1].toLowerCase().trim().split(/\s+/)[0]
       const fileIds = MEDIA_CATALOG[categoryKey]
       if (fileIds?.length > 0) {
