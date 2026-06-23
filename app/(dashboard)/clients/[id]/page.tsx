@@ -2,17 +2,27 @@ import { notFound } from 'next/navigation'
 import Link from 'next/link'
 import { ArrowLeft } from 'lucide-react'
 import ClientForm from '@/components/ClientForm'
-import QRConnect from '@/components/QRConnect'
-import { supabase } from '@/lib/supabase'
 
 export default async function EditClientPage({ params }: { params: { id: string } }) {
-  const { data: client, error } = await supabase
-    .from('clients')
-    .select('*')
-    .eq('id', params.id)
-    .single()
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL!
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY!
 
-  if (error || !client) notFound()
+  const res = await fetch(
+    `${url}/rest/v1/clients?id=eq.${params.id}&select=*&limit=1`,
+    {
+      headers: {
+        apikey: key,
+        Authorization: `Bearer ${key}`,
+        'Content-Type': 'application/json',
+      },
+      cache: 'no-store',
+    }
+  )
+
+  const rows = res.ok ? await res.json() : []
+  const client = rows?.[0]
+
+  if (!client) notFound()
 
   return (
     <div className="p-8 max-w-2xl mx-auto">
@@ -27,10 +37,7 @@ export default async function EditClientPage({ params }: { params: { id: string 
         <h1 className="text-2xl font-bold text-white">{client.nombre}</h1>
         <p className="text-slate-400 text-sm mt-1">Editar configuración del chatbot</p>
       </div>
-      <div className="space-y-4">
-        <QRConnect clientId={client.id} />
-        <ClientForm client={client} />
-      </div>
+      <ClientForm client={client} />
     </div>
   )
 }

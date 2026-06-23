@@ -235,9 +235,9 @@ export default function ClientForm({ client }: Props) {
           <textarea
             value={form.system_prompt}
             onChange={e => set('system_prompt', e.target.value)}
-            rows={6}
+            rows={16}
             placeholder="Eres un asistente de atención al cliente de [nombre del negocio]..."
-            className={`${inputCls} resize-y`}
+            className={`${inputCls} resize-y min-h-[200px]`}
           />
         </Field>
       </Section>
