@@ -1,17 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { getServerSession } from 'next-auth'
-import { authOptions } from '@/lib/auth-options'
 import { supabase } from '@/lib/supabase'
 
 type Params = { params: { id: string } }
 
 export async function GET(_req: NextRequest, { params }: Params) {
-  const session = await getServerSession(authOptions)
-  if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-
   const { data, error } = await supabase
     .from('clients')
-    .select('*')
+    .select('id, created_at, updated_at, nombre, tipo_negocio, whatsapp_number, groq_api_key, system_prompt, offhours_enabled, offhours_start, offhours_end, offhours_message, escalate_enabled, escalate_number, escalate_message, logs_enabled')
     .eq('id', params.id)
     .single()
 
@@ -20,9 +15,6 @@ export async function GET(_req: NextRequest, { params }: Params) {
 }
 
 export async function PUT(req: NextRequest, { params }: Params) {
-  const session = await getServerSession(authOptions)
-  if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-
   const body = await req.json()
   const { data, error } = await supabase.rpc('update_client_full', {
     p_id: params.id,
@@ -34,9 +26,6 @@ export async function PUT(req: NextRequest, { params }: Params) {
 }
 
 export async function DELETE(_req: NextRequest, { params }: Params) {
-  const session = await getServerSession(authOptions)
-  if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-
   const { error } = await supabase
     .from('clients')
     .delete()
