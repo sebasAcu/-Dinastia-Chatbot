@@ -53,18 +53,9 @@ const MEDIA_CATALOG: Record<string, string[]> = {
   ],
 }
 
-// Instrucción que se agrega al system prompt para que la IA señale cuándo enviar media
-const MEDIA_INSTRUCTIONS = `
-
-INSTRUCCIÓN TÉCNICA (no mencionar al cliente):
-Cuando debas enviar imágenes/videos de un producto según tus instrucciones, incluye al FINAL de tu mensaje el tag exacto: [SEND_MEDIA:categoria]
-Categorías disponibles:
-- [SEND_MEDIA:elevador] → Elevadores
-- [SEND_MEDIA:seccional] → Seccionales Americanos
-- [SEND_MEDIA:cremallera] → Motor de Cremallera
-- [SEND_MEDIA:cadena] → Motor de Cadena
-- [SEND_MEDIA:piston] → Motor de Pistón
-Incluye el tag solo cuando el cliente haya seleccionado específicamente esa categoría. Úsalo una sola vez por mensaje.`
+// Regex para detectar tags de media en cualquier formato que use la IA:
+// [SEND_MEDIA:cadena], [ENVIAR_MEDIA: CADENA], [Media: cadena], etc.
+const MEDIA_TAG_REGEX = /\[(?:SEND_MEDIA|ENVIAR_MEDIA|Media)\s*:\s*(\w+)\]/gi
 
 // ── Helpers ─────────────────────────────────────────────────
 
@@ -190,8 +181,7 @@ export async function POST(req: NextRequest) {
         { role: 'assistant', content: log.bot_response },
       ])
 
-    // Llamar a Groq con instrucciones de media al final del system prompt
-    const systemPrompt = (client.system_prompt || 'Eres un asistente útil.') + MEDIA_INSTRUCTIONS
+    const systemPrompt = client.system_prompt || 'Eres un asistente útil.'
 
     const groqRes = await fetch('https://api.groq.com/openai/v1/chat/completions', {
       method: 'POST',
@@ -217,9 +207,11 @@ export async function POST(req: NextRequest) {
       rawReply = groqData.choices?.[0]?.message?.content || rawReply
     }
 
-    // Detectar tag [SEND_MEDIA:categoria] en la respuesta de la IA
-    const mediaTagMatch = rawReply.match(/\[SEND_MEDIA:(\w+)\]/i)
-    const cleanReply = rawReply.replace(/\[SEND_MEDIA:\w+\]/gi, '').trim()
+    // Detectar tag de media en cualquier formato que use la IA
+    MEDIA_TAG_REGEX.lastIndex = 0
+    const mediaTagMatch = MEDIA_TAG_REGEX.exec(rawReply)
+    MEDIA_TAG_REGEX.lastIndex = 0
+    const cleanReply = rawReply.replace(MEDIA_TAG_REGEX, '').trim()
 
     // Enviar texto primero
     await sendMessage(instance, jid, cleanReply)
