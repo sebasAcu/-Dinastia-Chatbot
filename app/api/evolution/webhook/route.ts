@@ -1,8 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { supabase } from '@/lib/supabase'
 
 const EVOLUTION_URL = process.env.EVOLUTION_API_URL || ''
 const EVOLUTION_KEY = process.env.EVOLUTION_API_KEY || ''
+const SB_URL = process.env.NEXT_PUBLIC_SUPABASE_URL!
+const SB_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY!
+const SB_HEADERS = { apikey: SB_KEY, Authorization: `Bearer ${SB_KEY}`, 'Content-Type': 'application/json' }
 
 const humanTakeover = new Map<string, Map<string, number>>()
 const SILENCE_MS = 30 * 60 * 1000
@@ -137,19 +139,23 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ status: 'silenced' })
     }
 
-    // Buscar cliente — primero por RPC, luego fallback sin filtro de instancia
+    // Buscar cliente por evolution_instance via REST directo
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     let client: any = null
-    const { data: rows } = await supabase.rpc('find_client_by_instance', { p_instance: instance })
-    client = rows?.[0] ?? null
+    const cols = 'id,nombre,groq_api_key,system_prompt,offhours_enabled,offhours_start,offhours_end,offhours_message,escalate_enabled,escalate_number,escalate_message,logs_enabled,evolution_instance'
+    const r1 = await fetch(`${SB_URL}/rest/v1/clients?select=${cols}&evolution_instance=eq.${encodeURIComponent(instance)}&limit=1`, { headers: SB_HEADERS, cache: 'no-store' })
+    if (r1.ok) {
+      const rows = await r1.json()
+      client = rows?.[0] ?? null
+    }
 
     if (!client) {
-      const { data: fallback } = await supabase
-        .from('clients')
-        .select('id, nombre, groq_api_key, system_prompt, offhours_enabled, offhours_start, offhours_end, offhours_message, escalate_enabled, escalate_number, escalate_message, logs_enabled, wa_status')
-        .limit(1)
-        .single()
-      if (fallback) client = { ...fallback, evolution_instance: instance }
+      // Fallback: primer cliente disponible
+      const r2 = await fetch(`${SB_URL}/rest/v1/clients?select=${cols}&limit=1`, { headers: SB_HEADERS, cache: 'no-store' })
+      if (r2.ok) {
+        const rows = await r2.json()
+        if (rows?.[0]) client = rows[0]
+      }
     }
 
     if (!client || !client.id) {
@@ -170,17 +176,16 @@ export async function POST(req: NextRequest) {
     }
 
     // Historial de conversación
-    const { data: history } = await supabase
-      .from('message_logs')
-      .select('user_message, bot_response')
-      .eq('client_id', client.id)
-      .eq('from_number', jid)
-      .order('created_at', { ascending: false })
-      .limit(8)
+    let history: { user_message: string; bot_response: string }[] = []
+    const rh = await fetch(
+      `${SB_URL}/rest/v1/message_logs?select=user_message,bot_response&client_id=eq.${client.id}&from_number=eq.${encodeURIComponent(jid)}&order=created_at.desc&limit=8`,
+      { headers: SB_HEADERS, cache: 'no-store' }
+    )
+    if (rh.ok) history = await rh.json()
 
-    const historyMessages = (history || [])
+    const historyMessages = history
       .reverse()
-      .flatMap((log: { user_message: string; bot_response: string }) => [
+      .flatMap((log) => [
         { role: 'user', content: log.user_message },
         { role: 'assistant', content: log.bot_response },
       ])
@@ -234,14 +239,16 @@ export async function POST(req: NextRequest) {
 
     // Guardar log
     if (client.logs_enabled) {
-      await supabase.from('message_logs').insert({
-        client_id: client.id,
-        from_number: jid,
-        user_message: text,
-        bot_response: mediaSent
-          ? `${cleanReply} [Media: ${mediaTagMatch![1]}]`
-          : cleanReply,
-        status: 'sent',
+      await fetch(`${SB_URL}/rest/v1/message_logs`, {
+        method: 'POST',
+        headers: { ...SB_HEADERS, Prefer: 'return=minimal' },
+        body: JSON.stringify({
+          client_id: client.id,
+          from_number: jid,
+          user_message: text,
+          bot_response: mediaSent ? `${cleanReply} [Media: ${mediaTagMatch![1]}]` : cleanReply,
+          status: 'sent',
+        }),
       })
     }
 
