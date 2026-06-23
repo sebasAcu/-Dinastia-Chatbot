@@ -53,13 +53,13 @@ ESTADO ACTUAL: INICIO
 Saluda al cliente y muéstrale el menú. Si el cliente ya eligió una opción en este mensaje, incluye la etiqueta de estado correspondiente AL FINAL de tu respuesta.
 
 Menú a mostrar:
-"Buenos días/tardes, es un placer poder servirle 😊
+Buenos días/tardes, es un placer poder servirle 😊
 Soy el asistente virtual de Portones Americanos y Elevadores YIREH
 ¿En qué le puedo ayudar hoy?
 ✅ 1. Portón nuevo
 ✅ 2. Motor para portón existente
 ✅ 3. Elevador
-✅ 4. Reparación o mantenimiento"
+✅ 4. Reparación o mantenimiento
 
 Etiquetas de transición (NUNCA mostrarlas al cliente):
 - Si elige 1 o menciona portón nuevo → [ESTADO: porton_nuevo]
@@ -208,6 +208,7 @@ export async function POST(req: NextRequest) {
 
     const fromMe: boolean = data?.key?.fromMe
     const jid: string = data?.key?.remoteJid
+    const messageId: string = data?.key?.id || ''
 
     // ── Find client ──────────────────────────────────────────
     const cols = 'id,nombre,groq_api_key,system_prompt,offhours_enabled,offhours_start,offhours_end,offhours_message,logs_enabled,evolution_instance'
@@ -261,6 +262,11 @@ export async function POST(req: NextRequest) {
         datos_recolectados: {},
       })
       convState = { estado: 'inicio', opcion_elegida: null, media_enviada: false }
+    }
+
+    // Deduplicate: Evolution API can fire the same event more than once
+    if (messageId && convState?.datos_recolectados?.last_msg_id === messageId) {
+      return NextResponse.json({ status: 'duplicate' })
     }
 
     const { estado, opcion_elegida, media_enviada } = convState
@@ -319,6 +325,8 @@ export async function POST(req: NextRequest) {
       .replace(/\[ESTADO:\s*\w+\s*\]/gi, '')
       .replace(/\[OPCION:\s*[\w\s]+?\s*\]/gi, '')
       .trim()
+      .replace(/^["']|["']$/g, '')
+      .trim()
 
     // ── Send text ────────────────────────────────────────────
     await sendMessage(instance, jid, cleanReply)
@@ -341,10 +349,15 @@ export async function POST(req: NextRequest) {
     if (stateTagMatch) stateUpdates.estado = stateTagMatch[1].toLowerCase()
     if (opcionTagMatch) stateUpdates.opcion_elegida = opcionTagMatch[1].toLowerCase().trim()
     if (mediaSent) stateUpdates.media_enviada = true
-
-    if (Object.keys(stateUpdates).length > 0) {
-      await upsertConvState(jid, client.id, stateUpdates)
+    // Always persist the last processed message ID to prevent duplicate processing
+    if (messageId) {
+      stateUpdates.datos_recolectados = {
+        ...(convState?.datos_recolectados || {}),
+        last_msg_id: messageId,
+      }
     }
+
+    await upsertConvState(jid, client.id, stateUpdates)
 
     // ── Log ──────────────────────────────────────────────────
     if (client.logs_enabled) {
