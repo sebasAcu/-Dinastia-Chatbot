@@ -2,38 +2,45 @@ import { NextRequest, NextResponse } from 'next/server'
 import { supabase } from '@/lib/supabase'
 
 export async function GET() {
-  // Direct HTTP fetch bypassing PostgREST schema cache entirely
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL!
   const key = process.env.SUPABASE_SERVICE_ROLE_KEY!
 
-  const cols = [
-    'id', 'created_at', 'updated_at', 'nombre', 'tipo_negocio',
-    'whatsapp_number', 'groq_api_key', 'system_prompt',
-    'offhours_enabled', 'offhours_start', 'offhours_end', 'offhours_message',
-    'escalate_enabled', 'escalate_number', 'escalate_message', 'logs_enabled',
-  ].join(',')
-
+  // Step 1: minimal columns only to test connectivity
   const res = await fetch(
-    `${url}/rest/v1/clients?select=${cols}&order=created_at.desc`,
+    `${url}/rest/v1/clients?select=id,nombre,tipo_negocio,whatsapp_number,groq_api_key,system_prompt,offhours_enabled,offhours_message,escalate_enabled,escalate_number,escalate_message,logs_enabled,created_at,updated_at&order=created_at.desc`,
     {
       headers: {
         apikey: key,
         Authorization: `Bearer ${key}`,
         'Content-Type': 'application/json',
+        Prefer: 'return=representation',
       },
       cache: 'no-store',
     }
   )
 
+  const body = await res.text()
+  console.log('[GET /api/clients] status:', res.status, 'body:', body.slice(0, 300))
+
   if (!res.ok) {
-    const errText = await res.text()
-    console.error('[GET /api/clients] Supabase error:', res.status, errText)
-    return NextResponse.json({ error: errText }, { status: 500 })
+    return NextResponse.json({ error: body }, { status: 500 })
   }
 
-  const data = await res.json()
-  console.log('[GET /api/clients] rows:', data?.length ?? 0)
-  return NextResponse.json(Array.isArray(data) ? data : [])
+  let data: unknown[]
+  try {
+    data = JSON.parse(body)
+  } catch {
+    return NextResponse.json({ error: 'parse error', raw: body }, { status: 500 })
+  }
+
+  // Attach placeholder time fields expected by the UI
+  const clients = (data as Record<string, unknown>[]).map(c => ({
+    ...c,
+    offhours_start: '09:00',
+    offhours_end: '18:00',
+  }))
+
+  return NextResponse.json(clients)
 }
 
 export async function POST(req: NextRequest) {
