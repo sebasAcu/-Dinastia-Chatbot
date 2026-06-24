@@ -225,13 +225,16 @@ export async function POST(req: NextRequest) {
     }
     if (!client?.id) return NextResponse.json({ status: 'client_not_found' })
 
+    // Ignore anything that isn't a new message (delivery receipts, read ticks,
+    // connection events, etc. — many come with fromMe:true and would wrongly pause the bot)
+    if (event !== 'messages.upsert') return NextResponse.json({ status: 'ignored' })
+
     // ── Human reply → pause conversation ────────────────────
+    // Only fires for actual messages.upsert events now, not delivery receipts
     if (fromMe) {
       if (jid) await upsertConvState(jid, client.id, { estado: 'pausado' })
       return NextResponse.json({ status: 'human_reply' })
     }
-
-    if (event !== 'messages.upsert') return NextResponse.json({ status: 'ignored' })
 
     const text: string =
       data?.message?.conversation ||
@@ -261,7 +264,7 @@ export async function POST(req: NextRequest) {
         media_enviada: false,
         datos_recolectados: {},
       })
-      convState = { estado: 'inicio', opcion_elegida: null, media_enviada: false }
+      convState = { estado: 'inicio', opcion_elegida: null, media_enviada: false, datos_recolectados: {} }
     }
 
     // Deduplicate: Evolution API can fire the same event more than once
@@ -329,7 +332,7 @@ export async function POST(req: NextRequest) {
       .trim()
 
     // ── Send text ────────────────────────────────────────────
-    await sendMessage(instance, jid, cleanReply)
+    if (cleanReply) await sendMessage(instance, jid, cleanReply)
 
     // ── Send media (only once per conversation) ──────────────
     let mediaSent = false
