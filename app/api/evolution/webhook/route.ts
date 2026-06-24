@@ -4,44 +4,44 @@ const EVOLUTION_URL = process.env.EVOLUTION_API_URL || ''
 const EVOLUTION_KEY = process.env.EVOLUTION_API_KEY || ''
 const SB_URL = process.env.NEXT_PUBLIC_SUPABASE_URL!
 const SB_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY!
+const GOOGLE_API_KEY = process.env.GOOGLE_API_KEY || ''
 const SB_HEADERS = { apikey: SB_KEY, Authorization: `Bearer ${SB_KEY}`, 'Content-Type': 'application/json' }
 
-// ── Media catalog ────────────────────────────────────────────
-const MEDIA_CATALOG: Record<string, string[]> = {
-  elevador: [
-    '11xocVABPS0ZQVuv4rIhDdMB4AXPnnQzE',
-    '18QQhUX7crMmc-9SpH81SamuNpvERoENA',
-    '1EbFIToBEfvKE-Tdalkv3v-FNdgPWRw04',
-    '1GiAgscKijfs3VvdxxZRLEKQla8pK2F8h',
-    '1zCKsxvqYRLCJjLRnmyCt9OgN1s1hXc59',
-  ],
-  piston: [
-    '1F08Oi0V5LygKbrKhFg0ZrqgjX6B5BHHL',
-    '1F8x2gx9gDQkwAwR1nFubZrtQ1_B15aBF',
-    '1hmQKXgSjCQHXoQObPAhCgSNXZ888ffgR',
-    '1kxt8OW3IXuAGFoL6aTnKSmx_4yqG9cx_',
-  ],
-  cadena: [
-    '14bOwFq7nQInTcOQfN1aY1nKlmNL_X8IJ',
-    '1iqOWkry339qiYQJSTBEUZY8Vk9tVi7Qf',
-    '1uSaL68q58lFtgMYmHSjDTrCcPmC-2yJm',
-    '1RAx3jZ33aLkoNQK_F6XEVzfsHYneKee3',
-    '1vdishauxCRFkB-hmK73MoFb3qhppJghl',
-  ],
-  cremallera: [
-    '13uxFd9SDcPkrM6dWdxD9MbRACeaklFvf',
-    '1iZtRhekpw_M1KEIls1k58wZFKumV1BGm',
-    '1p76k5wSyi3XAO6KMcKrIBzrdXhCRmT-K',
-    '1w2Q9e6QPT2MzhlDgC-ffyDVQ6EJX0hDy',
-    '1Y-yt-OTd9XCYsjsItwKs4hXahjz3XJp9',
-  ],
-  seccional: [
-    '1b2fyCPamE4EhTr7ezZ5KlqUxM406Z6kY',
-    '1CAbt3K6htZjGlxl4hGGAH9TIVlpaTreG',
-    '1fLkxyh0xjg-8fMzCk4vi0jdVeYCf-mMJ',
-    '1g5P984rx3Ypq6Puf98itc1KtOTpmJ77X',
-    '1sMtE5eCWdZyeGjbQoOcE_ORV2Lm2F_A9',
-  ],
+// ── Google Drive folder IDs per category ─────────────────────
+// Folders must be shared as "Anyone with the link can view"
+const FOLDER_CATALOG: Record<string, string> = {
+  seccional:  '1SgeBlE_ufUL4P8fp3UeqNsH5KibLUF52',
+  cremallera: '15ycLegO6hrGPlmqDfEq59ZT2wXYsjVNM',
+  cadena:     '1XnP5w9RJisQ21I0yeo4mpoiXyNFZO2E8',
+  piston:     '1Mz29PYNgzSuCmLMVtS3642PjbT3SNBlC',
+  elevador:   '1c-s6yEmms4wpbkmVKPuTdE8IbgpmKlhQ',
+}
+
+// List up to 2 video/image file IDs from a public Drive folder
+async function getFilesFromFolder(folderId: string): Promise<string[]> {
+  if (!GOOGLE_API_KEY) {
+    console.error('[Media] GOOGLE_API_KEY env var not set')
+    return []
+  }
+  try {
+    const q = encodeURIComponent(`'${folderId}' in parents and trashed = false`)
+    const url = `https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,mimeType,name)&orderBy=name&pageSize=10&key=${GOOGLE_API_KEY}`
+    const res = await fetch(url, { cache: 'no-store' })
+    if (!res.ok) {
+      console.error('[Media] Drive API error:', res.status, await res.text())
+      return []
+    }
+    const data = await res.json()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const files: { id: string; mimeType: string }[] = data.files || []
+    return files
+      .filter(f => f.mimeType.startsWith('video/') || f.mimeType.startsWith('image/'))
+      .slice(0, 2)
+      .map(f => f.id)
+  } catch (err) {
+    console.error('[Media] Drive API fetch failed:', err)
+    return []
+  }
 }
 
 // ── State-specific prompts ───────────────────────────────────
@@ -182,7 +182,7 @@ async function sendMessage(instance: string, jid: string, text: string) {
 }
 
 async function sendMedia(instance: string, jid: string, fileId: string) {
-  await fetch(`${EVOLUTION_URL}/message/sendMedia/${instance}`, {
+  const res = await fetch(`${EVOLUTION_URL}/message/sendMedia/${instance}`, {
     method: 'POST',
     headers: { apikey: EVOLUTION_KEY, 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -194,6 +194,9 @@ async function sendMedia(instance: string, jid: string, fileId: string) {
       caption: '',
     }),
   })
+  if (!res.ok) {
+    console.error('[Media] Evolution sendMedia failed:', res.status, fileId, await res.text())
+  }
 }
 
 // ── POST handler ─────────────────────────────────────────────
@@ -352,12 +355,19 @@ export async function POST(req: NextRequest) {
     let mediaSent = false
     if (mediaTagMatch && !media_enviada) {
       const categoryKey = mediaTagMatch[1].toLowerCase().trim().split(/\s+/)[0]
-      const fileIds = MEDIA_CATALOG[categoryKey]?.slice(0, 2)
-      if (fileIds?.length > 0) {
-        for (const fileId of fileIds) {
-          await sendMedia(instance, jid, fileId)
+      const folderId = FOLDER_CATALOG[categoryKey]
+      if (!folderId) {
+        console.error('[Media] Unknown category key:', categoryKey)
+      } else {
+        const fileIds = await getFilesFromFolder(folderId)
+        if (fileIds.length > 0) {
+          for (const fileId of fileIds) {
+            await sendMedia(instance, jid, fileId)
+          }
+          mediaSent = true
+        } else {
+          console.error('[Media] No files found in folder:', folderId, 'category:', categoryKey)
         }
-        mediaSent = true
       }
     }
 
