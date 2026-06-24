@@ -391,7 +391,7 @@ export async function POST(req: NextRequest) {
       })
     }
 
-    return NextResponse.json({ status: 'ok', estado: stateUpdates.estado || estado })
+    return NextResponse.json({ status: 'ok', estado })
   } catch (err) {
     console.error('[Evolution] Error:', err)
     return NextResponse.json({ status: 'error' }, { status: 500 })
