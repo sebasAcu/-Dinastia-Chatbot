@@ -211,7 +211,7 @@ export async function POST(req: NextRequest) {
     const messageId: string = data?.key?.id || ''
 
     // ── Find client ──────────────────────────────────────────
-    const cols = 'id,nombre,groq_api_key,system_prompt,offhours_enabled,offhours_start,offhours_end,offhours_message,logs_enabled,evolution_instance'
+    const cols = 'id,nombre,groq_api_key,system_prompt,offhours_enabled,offhours_start,offhours_end,offhours_message,logs_enabled,state_machine_enabled,evolution_instance'
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     let client: any = null
     const r1 = await fetch(
@@ -255,33 +255,47 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // ── Conversation state ───────────────────────────────────
-    let convState = await getConvState(jid, client.id)
-    if (!convState) {
-      await upsertConvState(jid, client.id, {
-        estado: 'inicio',
-        opcion_elegida: null,
-        media_enviada: false,
-        datos_recolectados: {},
-      })
-      convState = { estado: 'inicio', opcion_elegida: null, media_enviada: false, datos_recolectados: {} }
-    }
+    const useMachine = client.state_machine_enabled !== false
 
-    // Deduplicate: Evolution API can fire the same event more than once
-    if (messageId && convState?.datos_recolectados?.last_msg_id === messageId) {
-      return NextResponse.json({ status: 'duplicate' })
-    }
+    // ── Conversation state (only when machine is on) ─────────
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let convState: any = null
+    let estado = 'inicio'
+    let opcion_elegida: string | null = null
+    let media_enviada = false
 
-    const { estado, opcion_elegida, media_enviada } = convState
+    if (useMachine) {
+      convState = await getConvState(jid, client.id)
+      if (!convState) {
+        await upsertConvState(jid, client.id, {
+          estado: 'inicio',
+          opcion_elegida: null,
+          media_enviada: false,
+          datos_recolectados: {},
+        })
+        convState = { estado: 'inicio', opcion_elegida: null, media_enviada: false, datos_recolectados: {} }
+      }
 
-    // Don't respond if paused or finished
-    if (estado === 'pausado' || estado === 'finalizado') {
-      return NextResponse.json({ status: `skipped_${estado}` })
+      // Deduplicate: Evolution API can fire the same event more than once
+      if (messageId && convState.datos_recolectados?.last_msg_id === messageId) {
+        return NextResponse.json({ status: 'duplicate' })
+      }
+
+      estado = convState.estado
+      opcion_elegida = convState.opcion_elegida
+      media_enviada = convState.media_enviada
+
+      // Don't respond if paused or finished
+      if (estado === 'pausado' || estado === 'finalizado') {
+        return NextResponse.json({ status: `skipped_${estado}` })
+      }
     }
 
     // ── Build system prompt ──────────────────────────────────
-    const stateInstructions = getStateInstructions(estado, opcion_elegida)
-    const systemPrompt = (client.system_prompt || 'Eres un asistente útil.') + stateInstructions
+    const basePrompt = client.system_prompt || 'Eres un asistente útil.'
+    const systemPrompt = useMachine
+      ? basePrompt + getStateInstructions(estado, opcion_elegida)
+      : basePrompt
 
     // ── Conversation history ─────────────────────────────────
     let history: { user_message: string; bot_response: string }[] = []
@@ -334,11 +348,11 @@ export async function POST(req: NextRequest) {
     // ── Send text ────────────────────────────────────────────
     if (cleanReply) await sendMessage(instance, jid, cleanReply)
 
-    // ── Send media (only once per conversation) ──────────────
+    // ── Send media (only once per conversation, max 2 files) ──
     let mediaSent = false
     if (mediaTagMatch && !media_enviada) {
       const categoryKey = mediaTagMatch[1].toLowerCase().trim().split(/\s+/)[0]
-      const fileIds = MEDIA_CATALOG[categoryKey]
+      const fileIds = MEDIA_CATALOG[categoryKey]?.slice(0, 2)
       if (fileIds?.length > 0) {
         for (const fileId of fileIds) {
           await sendMedia(instance, jid, fileId)
@@ -347,20 +361,20 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // ── Update conversation state ────────────────────────────
-    const stateUpdates: Record<string, unknown> = {}
-    if (stateTagMatch) stateUpdates.estado = stateTagMatch[1].toLowerCase()
-    if (opcionTagMatch) stateUpdates.opcion_elegida = opcionTagMatch[1].toLowerCase().trim()
-    if (mediaSent) stateUpdates.media_enviada = true
-    // Always persist the last processed message ID to prevent duplicate processing
-    if (messageId) {
-      stateUpdates.datos_recolectados = {
-        ...(convState?.datos_recolectados || {}),
-        last_msg_id: messageId,
+    // ── Update conversation state (only when machine is on) ──
+    if (useMachine) {
+      const stateUpdates: Record<string, unknown> = {}
+      if (stateTagMatch) stateUpdates.estado = stateTagMatch[1].toLowerCase()
+      if (opcionTagMatch) stateUpdates.opcion_elegida = opcionTagMatch[1].toLowerCase().trim()
+      if (mediaSent) stateUpdates.media_enviada = true
+      if (messageId) {
+        stateUpdates.datos_recolectados = {
+          ...(convState?.datos_recolectados || {}),
+          last_msg_id: messageId,
+        }
       }
+      await upsertConvState(jid, client.id, stateUpdates)
     }
-
-    await upsertConvState(jid, client.id, stateUpdates)
 
     // ── Log ──────────────────────────────────────────────────
     if (client.logs_enabled) {

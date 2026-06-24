@@ -23,6 +23,7 @@ const DEFAULTS: ClientFormData = {
   escalate_number: '',
   escalate_message: 'Te vamos a conectar con un agente humano que te ayudará enseguida.',
   logs_enabled: true,
+  state_machine_enabled: true,
   evolution_instance: '',
 }
 
@@ -137,6 +138,7 @@ export default function ClientForm({ client }: Props) {
           escalate_number: client.escalate_number,
           escalate_message: client.escalate_message,
           logs_enabled: client.logs_enabled,
+          state_machine_enabled: client.state_machine_enabled ?? true,
           evolution_instance: client.evolution_instance || '',
         }
       : DEFAULTS
@@ -244,6 +246,16 @@ export default function ClientForm({ client }: Props) {
 
       {/* Ajustes */}
       <Section title="Ajustes" defaultOpen={false}>
+        {/* State machine */}
+        <Toggle
+          checked={form.state_machine_enabled}
+          onChange={v => set('state_machine_enabled', v)}
+          label="Flujo guiado de conversación"
+          description="Activa el menú y la máquina de estados (portón, motor, elevador, reparación). Desactivar hace que el bot responda libremente según el prompt."
+        />
+
+        <div className="border-t border-slate-700" />
+
         {/* Logs */}
         <Toggle
           checked={form.logs_enabled}

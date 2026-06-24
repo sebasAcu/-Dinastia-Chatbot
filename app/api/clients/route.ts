@@ -13,7 +13,8 @@ const COLS = [
   'id', 'created_at', 'updated_at', 'nombre', 'tipo_negocio',
   'whatsapp_number', 'groq_api_key', 'system_prompt',
   'offhours_enabled', 'offhours_message',
-  'escalate_enabled', 'escalate_number', 'escalate_message', 'logs_enabled',
+  'escalate_enabled', 'escalate_number', 'escalate_message',
+  'logs_enabled', 'state_machine_enabled',
 ].join(',')
 
 export async function GET() {
@@ -48,6 +49,7 @@ export async function POST(req: NextRequest) {
     escalate_number: body.escalate_number ?? '',
     escalate_message: body.escalate_message ?? '',
     logs_enabled: body.logs_enabled ?? true,
+    state_machine_enabled: body.state_machine_enabled ?? true,
   }
 
   const res = await fetch(`${SB_URL}/rest/v1/clients`, {

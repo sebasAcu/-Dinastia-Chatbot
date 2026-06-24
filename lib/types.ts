@@ -19,6 +19,7 @@ export interface Client {
   escalate_number: string
   escalate_message: string
   logs_enabled: boolean
+  state_machine_enabled: boolean
   wa_status: WaStatus
   evolution_instance: string
 }

@@ -13,7 +13,7 @@ type Params = { params: { id: string } }
 
 export async function GET(_req: NextRequest, { params }: Params) {
   const res = await fetch(
-    `${SB_URL}/rest/v1/clients?id=eq.${params.id}&select=id,created_at,updated_at,nombre,tipo_negocio,whatsapp_number,groq_api_key,system_prompt,offhours_enabled,offhours_message,escalate_enabled,escalate_number,escalate_message,logs_enabled&limit=1`,
+    `${SB_URL}/rest/v1/clients?id=eq.${params.id}&select=id,created_at,updated_at,nombre,tipo_negocio,whatsapp_number,groq_api_key,system_prompt,offhours_enabled,offhours_message,escalate_enabled,escalate_number,escalate_message,logs_enabled,state_machine_enabled&limit=1`,
     { headers: HEADERS, cache: 'no-store' }
   )
   if (!res.ok) return NextResponse.json({ error: await res.text() }, { status: 404 })
@@ -41,6 +41,7 @@ export async function PUT(req: NextRequest, { params }: Params) {
     escalate_number: body.escalate_number,
     escalate_message: body.escalate_message,
     logs_enabled: body.logs_enabled,
+    state_machine_enabled: body.state_machine_enabled,
   }
 
   // Update evolution_instance separately if provided
