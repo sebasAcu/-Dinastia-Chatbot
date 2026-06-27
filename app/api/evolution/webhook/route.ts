@@ -101,7 +101,31 @@ export async function POST(req: NextRequest) {
       data?.message?.extendedTextMessage?.text ||
       ''
 
-    if (!text.trim() || !jid) return NextResponse.json({ status: 'empty' })
+    const MENU_PRINCIPAL =
+      'Buenas, es un placer poder servirle 😊\n' +
+      'Soy el asistente virtual de Portones Americanos y Elevadores YIREH\n' +
+      '¿En qué le puedo ayudar hoy?\n' +
+      '1️⃣ Portón nuevo\n' +
+      '2️⃣ Motor para portón existente\n' +
+      '3️⃣ Elevador\n' +
+      '4️⃣ Otros'
+
+    // Non-text messages (images, audio, stickers, etc.) → show menu
+    if (!text.trim() && jid) {
+      const isMedia = data?.message?.imageMessage ||
+        data?.message?.audioMessage ||
+        data?.message?.videoMessage ||
+        data?.message?.stickerMessage ||
+        data?.message?.documentMessage ||
+        data?.message?.pttMessage
+      if (isMedia) {
+        await sendEvolutionMessage(instance, jid, MENU_PRINCIPAL)
+        return NextResponse.json({ status: 'non_text_menu' })
+      }
+      return NextResponse.json({ status: 'empty' })
+    }
+
+    if (!jid) return NextResponse.json({ status: 'empty' })
 
     // ── Off-hours ────────────────────────────────────────────
     if (client.offhours_enabled) {
@@ -181,10 +205,11 @@ export async function POST(req: NextRequest) {
       }),
     })
 
-    let rawReply = 'Gracias por comunicarse con Portones Americanos y Elevadores YIREH. En unos momentos un asesor se pondrá en contacto con usted. 🙏'
+    // On Groq failure, show menu instead of a fake "asesor" message
+    let rawReply = MENU_PRINCIPAL
     if (groqRes.ok) {
       const groqData = await groqRes.json()
-      rawReply = groqData.choices?.[0]?.message?.content || rawReply
+      rawReply = groqData.choices?.[0]?.message?.content || MENU_PRINCIPAL
     } else {
       const errText = await groqRes.text().catch(() => '(no body)')
       console.error(`[Groq] FAILED status=${groqRes.status} body=${errText.slice(0, 300)}`)
