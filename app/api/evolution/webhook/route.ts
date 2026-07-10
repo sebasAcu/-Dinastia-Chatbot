@@ -6,8 +6,6 @@ const SB_URL = process.env.NEXT_PUBLIC_SUPABASE_URL!
 const SB_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY!
 const SB_HEADERS = { apikey: SB_KEY, Authorization: `Bearer ${SB_KEY}`, 'Content-Type': 'application/json' }
 
-const REACTIVATE_DAYS = 15
-
 // ── Supabase helpers ─────────────────────────────────────────
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 async function getConvState(chatId: string, clientId: string): Promise<any> {
@@ -73,12 +71,17 @@ export async function POST(req: NextRequest) {
       { headers: SB_HEADERS, cache: 'no-store' }
     )
     if (r1.ok) { const rows = await r1.json(); client = rows?.[0] ?? null }
+    if (!client) {
+      const r2 = await fetch(`${SB_URL}/rest/v1/clients?select=${cols}&limit=1`, { headers: SB_HEADERS, cache: 'no-store' })
+      if (r2.ok) { const rows = await r2.json(); if (rows?.[0]) client = rows[0] }
+    }
     if (!client?.id) return NextResponse.json({ status: 'client_not_found' })
 
     // Only process new message events
     if (event !== 'messages.upsert') return NextResponse.json({ status: 'ignored' })
 
     // ── Human reply → pause conversation ────────────────────
+    // Check bot_msg_ids to distinguish bot echoes from real human replies
     if (fromMe) {
       if (jid) {
         const state = await getConvState(jid, client.id)
@@ -98,60 +101,6 @@ export async function POST(req: NextRequest) {
       data?.message?.extendedTextMessage?.text ||
       ''
 
-    if (!jid) return NextResponse.json({ status: 'empty' })
-
-    const useMachine = client.state_machine_enabled !== false
-
-    // ── Early conversation state check ───────────────────────
-    // Must run BEFORE isMedia and off-hours so that silenced conversations
-    // (finalizado / pausado within 15 days) never receive any reply.
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    let convState: any = null
-    let estado = 'inicio'
-
-    if (useMachine) {
-      convState = await getConvState(jid, client.id)
-      if (!convState) {
-        convState = { estado: 'inicio', datos_recolectados: {} }
-      }
-
-      // Dedup: same messageId already processed
-      if (messageId && convState.datos_recolectados?.last_msg_id === messageId) {
-        return NextResponse.json({ status: 'duplicate' })
-      }
-
-      estado = convState.estado
-      console.log(`[Webhook] msg="${text.slice(0, 30)}" jid=${jid} estado=${estado} msgId=${messageId}`)
-
-      if (estado === 'finalizado' || estado === 'pausado') {
-        const updatedAt = convState.updated_at ? new Date(convState.updated_at) : null
-        const daysAgo = updatedAt ? (Date.now() - updatedAt.getTime()) / 86400000 : Infinity
-
-        if (daysAgo < REACTIVATE_DAYS) {
-          // Conversation silenced — ignore ALL message types (text and media)
-          console.log(`[Webhook] Silenced ${estado} (${daysAgo.toFixed(1)} days ago) — no reply`)
-          return NextResponse.json({ status: `silenced_${estado}` })
-        }
-
-        // More than 15 days passed → start fresh
-        console.log(`[Webhook] Reactivating after ${daysAgo.toFixed(1)} days (was ${estado})`)
-        estado = 'inicio'
-        convState = { estado: 'inicio', datos_recolectados: {} }
-      }
-    }
-
-    // ── Off-hours ────────────────────────────────────────────
-    if (client.offhours_enabled) {
-      const now = new Date()
-      const total = now.getUTCHours() * 60 + now.getUTCMinutes()
-      const [sh, sm] = (client.offhours_start || '09:00').split(':').map(Number)
-      const [eh, em] = (client.offhours_end || '18:00').split(':').map(Number)
-      if (total < sh * 60 + sm || total >= eh * 60 + em) {
-        await sendEvolutionMessage(instance, jid, client.offhours_message)
-        return NextResponse.json({ status: 'offhours' })
-      }
-    }
-
     const MENU_PRINCIPAL =
       'Buenas, es un placer poder servirle 😊\n' +
       'Soy el asistente virtual de Portones Americanos y Elevadores YIREH\n' +
@@ -161,9 +110,8 @@ export async function POST(req: NextRequest) {
       '3️⃣ Elevador\n' +
       '4️⃣ Otros'
 
-    // ── Non-text messages → show menu ────────────────────────
-    // Only reached if conversation is active (not silenced above)
-    if (!text.trim()) {
+    // Non-text messages (images, audio, stickers, etc.) → show menu
+    if (!text.trim() && jid) {
       const isMedia = data?.message?.imageMessage ||
         data?.message?.audioMessage ||
         data?.message?.videoMessage ||
@@ -177,18 +125,52 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ status: 'empty' })
     }
 
-    // ── Mark messageId before calling Groq (optimistic dedup) ─
-    if (useMachine && messageId) {
-      await upsertConvState(jid, client.id, {
-        estado,
-        datos_recolectados: {
-          ...(convState.datos_recolectados || {}),
-          last_msg_id: messageId,
-        },
-      })
+    if (!jid) return NextResponse.json({ status: 'empty' })
+
+    // ── Off-hours ────────────────────────────────────────────
+    if (client.offhours_enabled) {
+      const now = new Date()
+      const total = now.getUTCHours() * 60 + now.getUTCMinutes()
+      const [sh, sm] = (client.offhours_start || '09:00').split(':').map(Number)
+      const [eh, em] = (client.offhours_end || '18:00').split(':').map(Number)
+      if (total < sh * 60 + sm || total >= eh * 60 + em) {
+        await sendEvolutionMessage(instance, jid, client.offhours_message)
+        return NextResponse.json({ status: 'offhours' })
+      }
+    }
+
+    const useMachine = client.state_machine_enabled !== false
+
+    // ── Conversation state ────────────────────────────────────
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let convState: any = null
+    let estado = 'inicio'
+
+    if (useMachine) {
+      convState = await getConvState(jid, client.id)
+      if (!convState) {
+        await upsertConvState(jid, client.id, { estado: 'inicio', datos_recolectados: {} })
+        convState = { estado: 'inicio', datos_recolectados: {} }
+      }
+
+      // Deduplicate: Evolution can fire the same event more than once
+      if (messageId && convState.datos_recolectados?.last_msg_id === messageId) {
+        return NextResponse.json({ status: 'duplicate' })
+      }
+
+      estado = convState.estado
+      console.log(`[Webhook] msg="${text.slice(0, 30)}" jid=${jid} estado=${estado} msgId=${messageId}`)
+
+      if (estado === 'pausado' || estado === 'finalizado') {
+        console.log(`[Webhook] Skipping — estado=${estado}`)
+        return NextResponse.json({ status: `skipped_${estado}` })
+      }
     }
 
     // ── System prompt ─────────────────────────────────────────
+    // The AI follows the system prompt naturally based on conversation history.
+    // [CONV_FIN] tag is appended by the AI when it sends the final message,
+    // so the code can mark the conversation as finished.
     const basePrompt = client.system_prompt || 'Eres un asistente útil.'
     const systemPrompt = useMachine
       ? basePrompt + '\n\nCuando envíes el MENSAJE FINAL al cliente, añadí exactamente [CONV_FIN] al final de tu respuesta. El cliente nunca debe ver esa etiqueta.'
@@ -223,13 +205,15 @@ export async function POST(req: NextRequest) {
       }),
     })
 
-    if (!groqRes.ok) {
+    // On Groq failure, show menu instead of a fake "asesor" message
+    let rawReply = MENU_PRINCIPAL
+    if (groqRes.ok) {
+      const groqData = await groqRes.json()
+      rawReply = groqData.choices?.[0]?.message?.content || MENU_PRINCIPAL
+    } else {
       const errText = await groqRes.text().catch(() => '(no body)')
       console.error(`[Groq] FAILED status=${groqRes.status} body=${errText.slice(0, 300)}`)
-      return NextResponse.json({ status: 'groq_error' })
     }
-    const groqData = await groqRes.json()
-    const rawReply: string = groqData.choices?.[0]?.message?.content || ''
 
     // ── Parse [CONV_FIN] tag ─────────────────────────────────
     const isFinished = /\[CONV_FIN\]/i.test(rawReply)
