@@ -158,13 +158,13 @@ export async function POST(req: NextRequest) {
 
       if (estado === 'pausado' || estado === 'finalizado') {
         const updatedAt = convState.updated_at ? new Date(convState.updated_at) : null
-        const minAgo = updatedAt ? (Date.now() - updatedAt.getTime()) / 60000 : Infinity
-        if (minAgo < 15) {
-          console.log(`[Webhook] Skipping — estado=${estado} (${minAgo.toFixed(1)} min ago)`)
+        const daysAgo = updatedAt ? (Date.now() - updatedAt.getTime()) / 86400000 : Infinity
+        if (daysAgo < 15) {
+          console.log(`[Webhook] Skipping — estado=${estado} (${daysAgo.toFixed(1)} days ago)`)
           return NextResponse.json({ status: `skipped_${estado}` })
         }
-        // Pasaron más de 15 min → reiniciar conversación
-        console.log(`[Webhook] Reactivating after ${minAgo.toFixed(1)} min (was ${estado})`)
+        // Pasaron más de 15 días → reiniciar conversación
+        console.log(`[Webhook] Reactivating after ${daysAgo.toFixed(1)} days (was ${estado})`)
         estado = 'inicio'
         convState = { estado: 'inicio', datos_recolectados: {} }
       }
