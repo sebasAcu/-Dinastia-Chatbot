@@ -13,13 +13,13 @@ type Params = { params: { id: string } }
 
 export async function GET(_req: NextRequest, { params }: Params) {
   const res = await fetch(
-    `${SB_URL}/rest/v1/clients?id=eq.${params.id}&select=id,created_at,updated_at,nombre,tipo_negocio,whatsapp_number,groq_api_key,system_prompt,offhours_enabled,offhours_message,escalate_enabled,escalate_number,escalate_message,logs_enabled,state_machine_enabled&limit=1`,
+    `${SB_URL}/rest/v1/clients?id=eq.${params.id}&select=id,created_at,updated_at,nombre,tipo_negocio,whatsapp_number,groq_api_key,system_prompt,offhours_enabled,offhours_start,offhours_end,offhours_message,escalate_enabled,escalate_number,escalate_message,logs_enabled,state_machine_enabled&limit=1`,
     { headers: HEADERS, cache: 'no-store' }
   )
   if (!res.ok) return NextResponse.json({ error: await res.text() }, { status: 404 })
   const [data] = await res.json() as Record<string, unknown>[]
   if (!data) return NextResponse.json({ error: 'Not found' }, { status: 404 })
-  return NextResponse.json({ ...data, offhours_start: '09:00', offhours_end: '18:00' })
+  return NextResponse.json(data)
 }
 
 export async function PUT(req: NextRequest, { params }: Params) {

@@ -71,10 +71,6 @@ export async function POST(req: NextRequest) {
       { headers: SB_HEADERS, cache: 'no-store' }
     )
     if (r1.ok) { const rows = await r1.json(); client = rows?.[0] ?? null }
-    if (!client) {
-      const r2 = await fetch(`${SB_URL}/rest/v1/clients?select=${cols}&limit=1`, { headers: SB_HEADERS, cache: 'no-store' })
-      if (r2.ok) { const rows = await r2.json(); if (rows?.[0]) client = rows[0] }
-    }
     if (!client?.id) return NextResponse.json({ status: 'client_not_found' })
 
     // Only process new message events
@@ -149,11 +145,10 @@ export async function POST(req: NextRequest) {
     if (useMachine) {
       convState = await getConvState(jid, client.id)
       if (!convState) {
-        await upsertConvState(jid, client.id, { estado: 'inicio', datos_recolectados: {} })
         convState = { estado: 'inicio', datos_recolectados: {} }
       }
 
-      // Deduplicate: Evolution can fire the same event more than once
+      // Fast dedup: mismo messageId ya procesado
       if (messageId && convState.datos_recolectados?.last_msg_id === messageId) {
         return NextResponse.json({ status: 'duplicate' })
       }
@@ -165,6 +160,27 @@ export async function POST(req: NextRequest) {
         console.log(`[Webhook] Skipping — estado=${estado}`)
         return NextResponse.json({ status: `skipped_${estado}` })
       }
+
+      // Mutex distribuido: escribir un token único ANTES de llamar a Groq.
+      // Evolution puede disparar el mismo webhook varias veces simultáneamente.
+      // Todos escriben su token; el último en escribir gana. Los anteriores
+      // detectan que perdieron al releer y abortan, evitando respuestas duplicadas.
+      const myToken = crypto.randomUUID()
+      await upsertConvState(jid, client.id, {
+        estado,
+        datos_recolectados: {
+          ...(convState.datos_recolectados || {}),
+          last_msg_id: messageId,
+          _lock: myToken,
+        },
+      })
+      await new Promise<void>(r => setTimeout(r, 150))
+      const locked = await getConvState(jid, client.id)
+      if (locked?.datos_recolectados?._lock !== myToken) {
+        console.log(`[Webhook] Lost mutex race for msgId=${messageId}`)
+        return NextResponse.json({ status: 'duplicate_concurrent' })
+      }
+      convState = locked
     }
 
     // ── System prompt ─────────────────────────────────────────
@@ -205,15 +221,13 @@ export async function POST(req: NextRequest) {
       }),
     })
 
-    // On Groq failure, show menu instead of a fake "asesor" message
-    let rawReply = MENU_PRINCIPAL
-    if (groqRes.ok) {
-      const groqData = await groqRes.json()
-      rawReply = groqData.choices?.[0]?.message?.content || MENU_PRINCIPAL
-    } else {
+    if (!groqRes.ok) {
       const errText = await groqRes.text().catch(() => '(no body)')
       console.error(`[Groq] FAILED status=${groqRes.status} body=${errText.slice(0, 300)}`)
+      return NextResponse.json({ status: 'groq_error' })
     }
+    const groqData = await groqRes.json()
+    let rawReply = groqData.choices?.[0]?.message?.content || ''
 
     // ── Parse [CONV_FIN] tag ─────────────────────────────────
     const isFinished = /\[CONV_FIN\]/i.test(rawReply)

@@ -12,7 +12,7 @@ const HEADERS = {
 const COLS = [
   'id', 'created_at', 'updated_at', 'nombre', 'tipo_negocio',
   'whatsapp_number', 'groq_api_key', 'system_prompt',
-  'offhours_enabled', 'offhours_message',
+  'offhours_enabled', 'offhours_start', 'offhours_end', 'offhours_message',
   'escalate_enabled', 'escalate_number', 'escalate_message',
   'logs_enabled', 'state_machine_enabled',
 ].join(',')
@@ -23,9 +23,7 @@ export async function GET() {
     { headers: HEADERS, cache: 'no-store' }
   )
   if (!res.ok) return NextResponse.json({ error: await res.text() }, { status: 500 })
-  const raw = await res.json() as Record<string, unknown>[]
-  // Attach time fields as strings (TIME type returned by DB)
-  const data = raw.map(c => ({ ...c, offhours_start: '09:00', offhours_end: '18:00' }))
+  const data = await res.json() as Record<string, unknown>[]
   return NextResponse.json(data)
 }
 
