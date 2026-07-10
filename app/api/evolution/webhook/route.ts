@@ -216,12 +216,12 @@ export async function POST(req: NextRequest) {
       { role: 'assistant', content: log.bot_response },
     ])
 
-    // ── Call Gemini ───────────────────────────────────────────
-    const groqRes = await fetch('https://generativelanguage.googleapis.com/v1beta/openai/chat/completions', {
+    // ── Call Groq ─────────────────────────────────────────────
+    const groqRes = await fetch('https://api.groq.com/openai/v1/chat/completions', {
       method: 'POST',
-      headers: { Authorization: `Bearer ${GEMINI_KEY}`, 'Content-Type': 'application/json' },
+      headers: { Authorization: `Bearer ${client.groq_api_key}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        model: 'gemini-2.0-flash',
+        model: 'llama-3.3-70b-versatile',
         messages: [
           { role: 'system', content: systemPrompt },
           ...historyMessages,
@@ -234,12 +234,12 @@ export async function POST(req: NextRequest) {
 
     if (!groqRes.ok) {
       const errText = await groqRes.text().catch(() => '(no body)')
-      console.error(`[Gemini] FAILED status=${groqRes.status} body=${errText.slice(0, 300)}`)
-      return NextResponse.json({ status: 'gemini_error' })
+      console.error(`[Groq] FAILED status=${groqRes.status} body=${errText.slice(0, 300)}`)
+      return NextResponse.json({ status: 'groq_error' })
     }
     const groqData = await groqRes.json()
     const rawReply: string = groqData.choices?.[0]?.message?.content || ''
-    console.log(`[Gemini] rawReply="${rawReply.slice(0, 200)}"`)
+    console.log(`[Groq] rawReply="${rawReply.slice(0, 200)}"`)
 
     // ── Parse tags ───────────────────────────────────────────
     const isFinished = /\[CONV_FIN\]/i.test(rawReply)
