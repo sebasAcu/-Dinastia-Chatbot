@@ -6,6 +6,8 @@ const SB_URL = process.env.NEXT_PUBLIC_SUPABASE_URL!
 const SB_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY!
 const SB_HEADERS = { apikey: SB_KEY, Authorization: `Bearer ${SB_KEY}`, 'Content-Type': 'application/json' }
 
+const REACTIVATE_DAYS = 15
+
 // ── Supabase helpers ─────────────────────────────────────────
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 async function getConvState(chatId: string, clientId: string): Promise<any> {
@@ -77,7 +79,6 @@ export async function POST(req: NextRequest) {
     if (event !== 'messages.upsert') return NextResponse.json({ status: 'ignored' })
 
     // ── Human reply → pause conversation ────────────────────
-    // Check bot_msg_ids to distinguish bot echoes from real human replies
     if (fromMe) {
       if (jid) {
         const state = await getConvState(jid, client.id)
@@ -97,31 +98,47 @@ export async function POST(req: NextRequest) {
       data?.message?.extendedTextMessage?.text ||
       ''
 
-    const MENU_PRINCIPAL =
-      'Buenas, es un placer poder servirle 😊\n' +
-      'Soy el asistente virtual de Portones Americanos y Elevadores YIREH\n' +
-      '¿En qué le puedo ayudar hoy?\n' +
-      '1️⃣ Portón nuevo\n' +
-      '2️⃣ Motor para portón existente\n' +
-      '3️⃣ Elevador\n' +
-      '4️⃣ Otros'
-
-    // Non-text messages (images, audio, stickers, etc.) → show menu
-    if (!text.trim() && jid) {
-      const isMedia = data?.message?.imageMessage ||
-        data?.message?.audioMessage ||
-        data?.message?.videoMessage ||
-        data?.message?.stickerMessage ||
-        data?.message?.documentMessage ||
-        data?.message?.pttMessage
-      if (isMedia) {
-        await sendEvolutionMessage(instance, jid, MENU_PRINCIPAL)
-        return NextResponse.json({ status: 'non_text_menu' })
-      }
-      return NextResponse.json({ status: 'empty' })
-    }
-
     if (!jid) return NextResponse.json({ status: 'empty' })
+
+    const useMachine = client.state_machine_enabled !== false
+
+    // ── Early conversation state check ───────────────────────
+    // Must run BEFORE isMedia and off-hours so that silenced conversations
+    // (finalizado / pausado within 15 days) never receive any reply.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let convState: any = null
+    let estado = 'inicio'
+
+    if (useMachine) {
+      convState = await getConvState(jid, client.id)
+      if (!convState) {
+        convState = { estado: 'inicio', datos_recolectados: {} }
+      }
+
+      // Dedup: same messageId already processed
+      if (messageId && convState.datos_recolectados?.last_msg_id === messageId) {
+        return NextResponse.json({ status: 'duplicate' })
+      }
+
+      estado = convState.estado
+      console.log(`[Webhook] msg="${text.slice(0, 30)}" jid=${jid} estado=${estado} msgId=${messageId}`)
+
+      if (estado === 'finalizado' || estado === 'pausado') {
+        const updatedAt = convState.updated_at ? new Date(convState.updated_at) : null
+        const daysAgo = updatedAt ? (Date.now() - updatedAt.getTime()) / 86400000 : Infinity
+
+        if (daysAgo < REACTIVATE_DAYS) {
+          // Conversation silenced — ignore ALL message types (text and media)
+          console.log(`[Webhook] Silenced ${estado} (${daysAgo.toFixed(1)} days ago) — no reply`)
+          return NextResponse.json({ status: `silenced_${estado}` })
+        }
+
+        // More than 15 days passed → start fresh
+        console.log(`[Webhook] Reactivating after ${daysAgo.toFixed(1)} days (was ${estado})`)
+        estado = 'inicio'
+        convState = { estado: 'inicio', datos_recolectados: {} }
+      }
+    }
 
     // ── Off-hours ────────────────────────────────────────────
     if (client.offhours_enabled) {
@@ -135,66 +152,43 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    const useMachine = client.state_machine_enabled !== false
+    const MENU_PRINCIPAL =
+      'Buenas, es un placer poder servirle 😊\n' +
+      'Soy el asistente virtual de Portones Americanos y Elevadores YIREH\n' +
+      '¿En qué le puedo ayudar hoy?\n' +
+      '1️⃣ Portón nuevo\n' +
+      '2️⃣ Motor para portón existente\n' +
+      '3️⃣ Elevador\n' +
+      '4️⃣ Otros'
 
-    // ── Conversation state ────────────────────────────────────
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    let convState: any = null
-    let estado = 'inicio'
-
-    if (useMachine) {
-      convState = await getConvState(jid, client.id)
-      if (!convState) {
-        convState = { estado: 'inicio', datos_recolectados: {} }
+    // ── Non-text messages → show menu ────────────────────────
+    // Only reached if conversation is active (not silenced above)
+    if (!text.trim()) {
+      const isMedia = data?.message?.imageMessage ||
+        data?.message?.audioMessage ||
+        data?.message?.videoMessage ||
+        data?.message?.stickerMessage ||
+        data?.message?.documentMessage ||
+        data?.message?.pttMessage
+      if (isMedia) {
+        await sendEvolutionMessage(instance, jid, MENU_PRINCIPAL)
+        return NextResponse.json({ status: 'non_text_menu' })
       }
+      return NextResponse.json({ status: 'empty' })
+    }
 
-      // Fast dedup: mismo messageId ya procesado
-      if (messageId && convState.datos_recolectados?.last_msg_id === messageId) {
-        return NextResponse.json({ status: 'duplicate' })
-      }
-
-      estado = convState.estado
-      console.log(`[Webhook] msg="${text.slice(0, 30)}" jid=${jid} estado=${estado} msgId=${messageId}`)
-
-      if (estado === 'pausado' || estado === 'finalizado') {
-        const updatedAt = convState.updated_at ? new Date(convState.updated_at) : null
-        const daysAgo = updatedAt ? (Date.now() - updatedAt.getTime()) / 86400000 : Infinity
-        if (daysAgo < 15) {
-          console.log(`[Webhook] Skipping — estado=${estado} (${daysAgo.toFixed(1)} days ago)`)
-          return NextResponse.json({ status: `skipped_${estado}` })
-        }
-        // Pasaron más de 15 días → reiniciar conversación
-        console.log(`[Webhook] Reactivating after ${daysAgo.toFixed(1)} days (was ${estado})`)
-        estado = 'inicio'
-        convState = { estado: 'inicio', datos_recolectados: {} }
-      }
-
-      // Mutex distribuido: escribir un token único ANTES de llamar a Groq.
-      // Evolution puede disparar el mismo webhook varias veces simultáneamente.
-      // Todos escriben su token; el último en escribir gana. Los anteriores
-      // detectan que perdieron al releer y abortan, evitando respuestas duplicadas.
-      const myToken = crypto.randomUUID()
+    // ── Mark messageId before calling Groq (optimistic dedup) ─
+    if (useMachine && messageId) {
       await upsertConvState(jid, client.id, {
         estado,
         datos_recolectados: {
           ...(convState.datos_recolectados || {}),
           last_msg_id: messageId,
-          _lock: myToken,
         },
       })
-      await new Promise<void>(r => setTimeout(r, 150))
-      const locked = await getConvState(jid, client.id)
-      if (locked?.datos_recolectados?._lock !== myToken) {
-        console.log(`[Webhook] Lost mutex race for msgId=${messageId}`)
-        return NextResponse.json({ status: 'duplicate_concurrent' })
-      }
-      convState = locked
     }
 
     // ── System prompt ─────────────────────────────────────────
-    // The AI follows the system prompt naturally based on conversation history.
-    // [CONV_FIN] tag is appended by the AI when it sends the final message,
-    // so the code can mark the conversation as finished.
     const basePrompt = client.system_prompt || 'Eres un asistente útil.'
     const systemPrompt = useMachine
       ? basePrompt + '\n\nCuando envíes el MENSAJE FINAL al cliente, añadí exactamente [CONV_FIN] al final de tu respuesta. El cliente nunca debe ver esa etiqueta.'
@@ -235,7 +229,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ status: 'groq_error' })
     }
     const groqData = await groqRes.json()
-    let rawReply = groqData.choices?.[0]?.message?.content || ''
+    const rawReply: string = groqData.choices?.[0]?.message?.content || ''
 
     // ── Parse [CONV_FIN] tag ─────────────────────────────────
     const isFinished = /\[CONV_FIN\]/i.test(rawReply)
