@@ -165,6 +165,15 @@ export async function POST(req: NextRequest) {
         console.log(`[Webhook] Skipping — estado=${estado}`)
         return NextResponse.json({ status: `skipped_${estado}` })
       }
+
+      // Claim this message immediately so concurrent duplicate webhook fires
+      // see last_msg_id already set and return 'duplicate' before hitting Groq
+      if (messageId) {
+        await upsertConvState(jid, client.id, {
+          estado,
+          datos_recolectados: { ...(convState.datos_recolectados || {}), last_msg_id: messageId },
+        })
+      }
     }
 
     // Non-text messages (audio, stickers, etc.) → show menu only if conversation is active
