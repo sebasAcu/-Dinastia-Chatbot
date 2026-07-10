@@ -48,6 +48,20 @@ async function sendEvolutionMessage(instance: string, jid: string, text: string)
   }
 }
 
+async function sendEvolutionMedia(instance: string, jid: string, driveFileId: string): Promise<void> {
+  const mediaUrl = `https://drive.google.com/uc?id=${driveFileId}&export=download`
+  try {
+    const res = await fetch(`${EVOLUTION_URL}/message/sendMedia/${instance}`, {
+      method: 'POST',
+      headers: { apikey: EVOLUTION_KEY, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ number: jid, mediatype: 'image', media: mediaUrl, mimetype: 'image/jpeg' }),
+    })
+    if (!res.ok) console.error('[sendMedia] Failed:', res.status, await res.text())
+  } catch (err) {
+    console.error('[sendMedia] Exception:', err)
+  }
+}
+
 // ── POST handler ─────────────────────────────────────────────
 export async function POST(req: NextRequest) {
   try {
@@ -205,25 +219,36 @@ export async function POST(req: NextRequest) {
       }),
     })
 
-    // On Groq failure, show menu instead of a fake "asesor" message
-    let rawReply = MENU_PRINCIPAL
-    if (groqRes.ok) {
-      const groqData = await groqRes.json()
-      rawReply = groqData.choices?.[0]?.message?.content || MENU_PRINCIPAL
-    } else {
+    if (!groqRes.ok) {
       const errText = await groqRes.text().catch(() => '(no body)')
       console.error(`[Groq] FAILED status=${groqRes.status} body=${errText.slice(0, 300)}`)
+      return NextResponse.json({ status: 'groq_error' })
+    }
+    const groqData = await groqRes.json()
+    const rawReply: string = groqData.choices?.[0]?.message?.content || ''
+
+    // ── Parse tags ───────────────────────────────────────────
+    const isFinished = /\[CONV_FIN\]/i.test(rawReply)
+
+    // Extract [ENVIAR_MEDIA: file_id] tags
+    const mediaIds: string[] = []
+    const mediaTagRegex = /\[ENVIAR_MEDIA:\s*([^\]]+)\]/gi
+    let mediaMatch
+    while ((mediaMatch = mediaTagRegex.exec(rawReply)) !== null) {
+      mediaIds.push(mediaMatch[1].trim())
     }
 
-    // ── Parse [CONV_FIN] tag ─────────────────────────────────
-    const isFinished = /\[CONV_FIN\]/i.test(rawReply)
     const cleanReply = rawReply
+      .replace(/\[ENVIAR_MEDIA:[^\]]+\]/gi, '')
       .replace(/\[CONV_FIN\]/gi, '')
       .trim()
       .replace(/^["']|["']$/g, '')
       .trim()
 
-    // ── Send message ─────────────────────────────────────────
+    // ── Send media then text ──────────────────────────────────
+    for (const fileId of mediaIds) {
+      await sendEvolutionMedia(instance, jid, fileId)
+    }
     let botMsgId: string | null = null
     if (cleanReply) botMsgId = await sendEvolutionMessage(instance, jid, cleanReply)
 
