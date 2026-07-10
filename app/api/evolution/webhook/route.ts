@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 
 const EVOLUTION_URL = process.env.EVOLUTION_API_URL || ''
 const EVOLUTION_KEY = process.env.EVOLUTION_API_KEY || ''
+const GEMINI_KEY = process.env.GEMINI_API_KEY || ''
 const SB_URL = process.env.NEXT_PUBLIC_SUPABASE_URL!
 const SB_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY!
 const SB_HEADERS = { apikey: SB_KEY, Authorization: `Bearer ${SB_KEY}`, 'Content-Type': 'application/json' }
@@ -215,12 +216,12 @@ export async function POST(req: NextRequest) {
       { role: 'assistant', content: log.bot_response },
     ])
 
-    // ── Call Groq ────────────────────────────────────────────
-    const groqRes = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+    // ── Call Gemini ───────────────────────────────────────────
+    const groqRes = await fetch('https://generativelanguage.googleapis.com/v1beta/openai/chat/completions', {
       method: 'POST',
-      headers: { Authorization: `Bearer ${client.groq_api_key}`, 'Content-Type': 'application/json' },
+      headers: { Authorization: `Bearer ${GEMINI_KEY}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        model: 'llama-3.3-70b-versatile',
+        model: 'gemini-2.0-flash',
         messages: [
           { role: 'system', content: systemPrompt },
           ...historyMessages,
@@ -233,12 +234,12 @@ export async function POST(req: NextRequest) {
 
     if (!groqRes.ok) {
       const errText = await groqRes.text().catch(() => '(no body)')
-      console.error(`[Groq] FAILED status=${groqRes.status} body=${errText.slice(0, 300)}`)
-      return NextResponse.json({ status: 'groq_error' })
+      console.error(`[Gemini] FAILED status=${groqRes.status} body=${errText.slice(0, 300)}`)
+      return NextResponse.json({ status: 'gemini_error' })
     }
     const groqData = await groqRes.json()
     const rawReply: string = groqData.choices?.[0]?.message?.content || ''
-    console.log(`[Groq] rawReply="${rawReply.slice(0, 200)}"`)
+    console.log(`[Gemini] rawReply="${rawReply.slice(0, 200)}"`)
 
     // ── Parse tags ───────────────────────────────────────────
     const isFinished = /\[CONV_FIN\]/i.test(rawReply)
