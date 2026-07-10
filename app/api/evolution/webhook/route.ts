@@ -49,7 +49,7 @@ async function sendEvolutionMessage(instance: string, jid: string, text: string)
 }
 
 async function sendEvolutionMedia(instance: string, jid: string, driveFileId: string): Promise<void> {
-  const mediaUrl = `https://drive.google.com/uc?id=${driveFileId}&export=download`
+  const mediaUrl = `https://lh3.googleusercontent.com/d/${driveFileId}`
   try {
     const res = await fetch(`${EVOLUTION_URL}/message/sendMedia/${instance}`, {
       method: 'POST',
@@ -187,7 +187,9 @@ export async function POST(req: NextRequest) {
     // so the code can mark the conversation as finished.
     const basePrompt = client.system_prompt || 'Eres un asistente útil.'
     const systemPrompt = useMachine
-      ? basePrompt + '\n\nCuando envíes el MENSAJE FINAL al cliente, añadí exactamente [CONV_FIN] al final de tu respuesta. El cliente nunca debe ver esa etiqueta.'
+      ? basePrompt +
+        '\n\nCuando envíes el MENSAJE FINAL al cliente, añadí exactamente [CONV_FIN] al final de tu respuesta. El cliente nunca debe ver esa etiqueta.' +
+        '\n\nCuando quieras enviar una imagen al cliente, incluí exactamente la etiqueta [ENVIAR_MEDIA: FILE_ID] en tu respuesta, donde FILE_ID es el ID de Google Drive indicado en el prompt para esa imagen. Podés incluir varias etiquetas [ENVIAR_MEDIA:] en la misma respuesta. El cliente nunca verá esas etiquetas.'
       : basePrompt
 
     // ── Conversation history ─────────────────────────────────
@@ -226,6 +228,7 @@ export async function POST(req: NextRequest) {
     }
     const groqData = await groqRes.json()
     const rawReply: string = groqData.choices?.[0]?.message?.content || ''
+    console.log(`[Groq] rawReply="${rawReply.slice(0, 200)}"`)
 
     // ── Parse tags ───────────────────────────────────────────
     const isFinished = /\[CONV_FIN\]/i.test(rawReply)
@@ -246,6 +249,7 @@ export async function POST(req: NextRequest) {
       .trim()
 
     // ── Send media then text ──────────────────────────────────
+    if (mediaIds.length > 0) console.log(`[Media] Sending ${mediaIds.length} image(s): ${mediaIds.join(', ')}`)
     for (const fileId of mediaIds) {
       await sendEvolutionMedia(instance, jid, fileId)
     }
