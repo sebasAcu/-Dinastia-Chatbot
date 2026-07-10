@@ -157,8 +157,16 @@ export async function POST(req: NextRequest) {
       console.log(`[Webhook] msg="${text.slice(0, 30)}" jid=${jid} estado=${estado} msgId=${messageId}`)
 
       if (estado === 'pausado' || estado === 'finalizado') {
-        console.log(`[Webhook] Skipping — estado=${estado}`)
-        return NextResponse.json({ status: `skipped_${estado}` })
+        const updatedAt = convState.updated_at ? new Date(convState.updated_at) : null
+        const minAgo = updatedAt ? (Date.now() - updatedAt.getTime()) / 60000 : Infinity
+        if (minAgo < 15) {
+          console.log(`[Webhook] Skipping — estado=${estado} (${minAgo.toFixed(1)} min ago)`)
+          return NextResponse.json({ status: `skipped_${estado}` })
+        }
+        // Pasaron más de 15 min → reiniciar conversación
+        console.log(`[Webhook] Reactivating after ${minAgo.toFixed(1)} min (was ${estado})`)
+        estado = 'inicio'
+        convState = { estado: 'inicio', datos_recolectados: {} }
       }
 
       // Mutex distribuido: escribir un token único ANTES de llamar a Groq.
