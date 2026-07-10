@@ -124,21 +124,6 @@ export async function POST(req: NextRequest) {
       '3️⃣ Elevador\n' +
       '4️⃣ Otros'
 
-    // Non-text messages (images, audio, stickers, etc.) → show menu
-    if (!text.trim() && jid) {
-      const isMedia = data?.message?.imageMessage ||
-        data?.message?.audioMessage ||
-        data?.message?.videoMessage ||
-        data?.message?.stickerMessage ||
-        data?.message?.documentMessage ||
-        data?.message?.pttMessage
-      if (isMedia) {
-        await sendEvolutionMessage(instance, jid, MENU_PRINCIPAL)
-        return NextResponse.json({ status: 'non_text_menu' })
-      }
-      return NextResponse.json({ status: 'empty' })
-    }
-
     if (!jid) return NextResponse.json({ status: 'empty' })
 
     // ── Off-hours ────────────────────────────────────────────
@@ -175,10 +160,26 @@ export async function POST(req: NextRequest) {
       estado = convState.estado
       console.log(`[Webhook] msg="${text.slice(0, 30)}" jid=${jid} estado=${estado} msgId=${messageId}`)
 
+      // Silence finalizado/pausado — never respond, never send menu
       if (estado === 'pausado' || estado === 'finalizado') {
         console.log(`[Webhook] Skipping — estado=${estado}`)
         return NextResponse.json({ status: `skipped_${estado}` })
       }
+    }
+
+    // Non-text messages (audio, stickers, etc.) → show menu only if conversation is active
+    if (!text.trim()) {
+      const isMedia = data?.message?.imageMessage ||
+        data?.message?.audioMessage ||
+        data?.message?.videoMessage ||
+        data?.message?.stickerMessage ||
+        data?.message?.documentMessage ||
+        data?.message?.pttMessage
+      if (isMedia) {
+        await sendEvolutionMessage(instance, jid, MENU_PRINCIPAL)
+        return NextResponse.json({ status: 'non_text_menu' })
+      }
+      return NextResponse.json({ status: 'empty' })
     }
 
     // ── System prompt ─────────────────────────────────────────
