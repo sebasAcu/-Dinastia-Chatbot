@@ -58,35 +58,46 @@ async function sendEvolutionMessage(instance: string, jid: string, text: string)
 }
 
 async function sendEvolutionMedia(instance: string, jid: string, driveFileId: string): Promise<void> {
-  // Download from Drive first — Evolution can't follow Drive's redirect chain
-  const downloadUrl = `https://drive.usercontent.google.com/download?id=${driveFileId}&export=download&authuser=0&confirm=t`
-  console.log(`[sendMedia] Downloading fileId="${driveFileId}"`)
+  console.log(`[sendMedia] fileId="${driveFileId}"`)
   try {
-    const driveRes = await fetch(downloadUrl, { redirect: 'follow' })
-    if (!driveRes.ok) {
-      console.error(`[sendMedia] Drive download failed: ${driveRes.status}`)
-      return
+    // Try downloading from Drive and sending as base64
+    const downloadUrl = `https://drive.usercontent.google.com/download?id=${driveFileId}&export=download&authuser=0&confirm=t`
+    const driveRes = await fetch(downloadUrl, {
+      redirect: 'follow',
+      headers: { 'User-Agent': 'Mozilla/5.0 (compatible; Bot/1.0)', Accept: '*/*' },
+    })
+
+    if (driveRes.ok) {
+      const contentType = driveRes.headers.get('content-type') || 'video/mp4'
+      const isVideo = contentType.startsWith('video/') || contentType === 'application/octet-stream'
+      const mediatype = isVideo ? 'video' : 'image'
+      const mimetype = isVideo ? 'video/mp4' : 'image/jpeg'
+      const buffer = await driveRes.arrayBuffer()
+      const base64 = Buffer.from(buffer).toString('base64')
+      console.log(`[sendMedia] Downloaded ${buffer.byteLength}b, sending as ${mediatype}`)
+
+      const res = await fetch(`${EVOLUTION_URL}/message/sendMedia/${instance}`, {
+        method: 'POST',
+        headers: { apikey: EVOLUTION_KEY, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ number: jid, mediatype, media: base64, mimetype, fileName: isVideo ? 'video.mp4' : 'image.jpg' }),
+      })
+      const body = await res.text()
+      if (res.ok) { console.log(`[sendMedia] OK (base64)`); return }
+      console.error(`[sendMedia] Evolution base64 failed ${res.status}: ${body.slice(0, 200)}`)
+    } else {
+      console.error(`[sendMedia] Drive download failed: ${driveRes.status} — falling back to URL`)
     }
-    const contentType = driveRes.headers.get('content-type') || 'video/mp4'
-    const isVideo = contentType.startsWith('video/') || contentType === 'application/octet-stream'
-    const mediatype = isVideo ? 'video' : 'image'
-    const mimetype = isVideo ? 'video/mp4' : 'image/jpeg'
 
-    const buffer = await driveRes.arrayBuffer()
-    const base64 = Buffer.from(buffer).toString('base64')
-    console.log(`[sendMedia] ${buffer.byteLength} bytes, type=${contentType}, sending as ${mediatype}`)
-
-    const res = await fetch(`${EVOLUTION_URL}/message/sendMedia/${instance}`, {
+    // Fallback: send Drive URL directly (Evolution fetches it)
+    const fallbackUrl = `https://drive.google.com/uc?id=${driveFileId}&export=download`
+    const res2 = await fetch(`${EVOLUTION_URL}/message/sendMedia/${instance}`, {
       method: 'POST',
       headers: { apikey: EVOLUTION_KEY, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ number: jid, mediatype, media: base64, mimetype, fileName: isVideo ? 'video.mp4' : 'image.jpg' }),
+      body: JSON.stringify({ number: jid, mediatype: 'video', media: fallbackUrl, mimetype: 'video/mp4', fileName: 'video.mp4' }),
     })
-    const body = await res.text()
-    if (!res.ok) {
-      console.error(`[sendMedia] Evolution failed status=${res.status} body=${body.slice(0, 500)}`)
-    } else {
-      console.log(`[sendMedia] OK`)
-    }
+    const body2 = await res2.text()
+    if (res2.ok) { console.log(`[sendMedia] OK (url fallback)`); return }
+    console.error(`[sendMedia] Both methods failed. Last: ${res2.status}: ${body2.slice(0, 200)}`)
   } catch (err) {
     console.error('[sendMedia] Exception:', err)
   }
@@ -203,18 +214,20 @@ export async function POST(req: NextRequest) {
       '\n\nCuando envíes el MENSAJE FINAL al cliente, añadí exactamente [CONV_FIN] al final de tu respuesta. El cliente nunca debe ver esa etiqueta.' +
       '\n\nCuando quieras enviar una imagen al cliente, incluí exactamente la etiqueta [ENVIAR_MEDIA: FILE_ID] en tu respuesta, donde FILE_ID es el ID de Google Drive indicado en el prompt para esa imagen. Podés incluir varias etiquetas [ENVIAR_MEDIA:] en la misma respuesta. El cliente nunca verá esas etiquetas.'
 
-    // ── Conversation history (last 6 exchanges) ──────────────
-    let history: { user_message: string; bot_response: string }[] = []
-    const rh = await fetch(
-      `${SB_URL}/rest/v1/message_logs?select=user_message,bot_response&client_id=eq.${client.id}&from_number=eq.${encodeURIComponent(jid)}&order=created_at.desc&limit=6`,
-      { headers: SB_HEADERS, cache: 'no-store' }
-    )
-    if (rh.ok) history = await rh.json()
-
-    const historyMessages = history.reverse().flatMap((log) => [
-      { role: 'user', content: log.user_message },
-      { role: 'assistant', content: log.bot_response },
-    ])
+    // ── Conversation history (skip when starting fresh to avoid confusing the model) ──
+    let historyMessages: { role: string; content: string }[] = []
+    if (estado !== 'inicio') {
+      let history: { user_message: string; bot_response: string }[] = []
+      const rh = await fetch(
+        `${SB_URL}/rest/v1/message_logs?select=user_message,bot_response&client_id=eq.${client.id}&from_number=eq.${encodeURIComponent(jid)}&order=created_at.desc&limit=6`,
+        { headers: SB_HEADERS, cache: 'no-store' }
+      )
+      if (rh.ok) history = await rh.json()
+      historyMessages = history.reverse().flatMap((log) => [
+        { role: 'user', content: log.user_message },
+        { role: 'assistant', content: log.bot_response },
+      ])
+    }
 
     // ── Call Cerebras (OpenAI-compatible, llama-3.3-70b) ─────
     const cerebrasKey = process.env.CEREBRAS_API_KEY || client.groq_api_key || ''
