@@ -59,45 +59,42 @@ async function sendEvolutionMessage(instance: string, jid: string, text: string)
 
 async function sendEvolutionMedia(instance: string, jid: string, driveFileId: string): Promise<void> {
   console.log(`[sendMedia] fileId="${driveFileId}"`)
+  const evUrl = `${EVOLUTION_URL}/message/sendMedia/${instance}`
+  const evHeaders = { apikey: EVOLUTION_KEY, 'Content-Type': 'application/json' }
+
   try {
-    // Try downloading from Drive and sending as base64
-    const downloadUrl = `https://drive.usercontent.google.com/download?id=${driveFileId}&export=download&authuser=0&confirm=t`
-    const driveRes = await fetch(downloadUrl, {
-      redirect: 'follow',
-      headers: { 'User-Agent': 'Mozilla/5.0 (compatible; Bot/1.0)', Accept: '*/*' },
+    // Attempt 1: lh3 CDN URL with video type (direct, no redirect)
+    const lh3Url = `https://lh3.googleusercontent.com/d/${driveFileId}`
+    const r1 = await fetch(evUrl, {
+      method: 'POST', headers: evHeaders,
+      body: JSON.stringify({ number: jid, mediatype: 'video', media: lh3Url, mimetype: 'video/mp4', fileName: 'video.mp4' }),
     })
+    if (r1.ok) { console.log(`[sendMedia] OK via lh3+video`); return }
+    console.error(`[sendMedia] lh3+video failed ${r1.status}: ${(await r1.text()).slice(0, 200)}`)
 
-    if (driveRes.ok) {
-      const contentType = driveRes.headers.get('content-type') || 'video/mp4'
-      const isVideo = contentType.startsWith('video/') || contentType === 'application/octet-stream'
-      const mediatype = isVideo ? 'video' : 'image'
-      const mimetype = isVideo ? 'video/mp4' : 'image/jpeg'
-      const buffer = await driveRes.arrayBuffer()
-      const base64 = Buffer.from(buffer).toString('base64')
-      console.log(`[sendMedia] Downloaded ${buffer.byteLength}b, sending as ${mediatype}`)
-
-      const res = await fetch(`${EVOLUTION_URL}/message/sendMedia/${instance}`, {
-        method: 'POST',
-        headers: { apikey: EVOLUTION_KEY, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ number: jid, mediatype, media: base64, mimetype, fileName: isVideo ? 'video.mp4' : 'image.jpg' }),
-      })
-      const body = await res.text()
-      if (res.ok) { console.log(`[sendMedia] OK (base64)`); return }
-      console.error(`[sendMedia] Evolution base64 failed ${res.status}: ${body.slice(0, 200)}`)
-    } else {
-      console.error(`[sendMedia] Drive download failed: ${driveRes.status} — falling back to URL`)
-    }
-
-    // Fallback: send Drive URL directly (Evolution fetches it)
-    const fallbackUrl = `https://drive.google.com/uc?id=${driveFileId}&export=download`
-    const res2 = await fetch(`${EVOLUTION_URL}/message/sendMedia/${instance}`, {
-      method: 'POST',
-      headers: { apikey: EVOLUTION_KEY, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ number: jid, mediatype: 'video', media: fallbackUrl, mimetype: 'video/mp4', fileName: 'video.mp4' }),
+    // Attempt 2: drive.google.com uc URL with video type
+    const ucUrl = `https://drive.google.com/uc?id=${driveFileId}&export=download`
+    const r2 = await fetch(evUrl, {
+      method: 'POST', headers: evHeaders,
+      body: JSON.stringify({ number: jid, mediatype: 'video', media: ucUrl, mimetype: 'video/mp4', fileName: 'video.mp4' }),
     })
-    const body2 = await res2.text()
-    if (res2.ok) { console.log(`[sendMedia] OK (url fallback)`); return }
-    console.error(`[sendMedia] Both methods failed. Last: ${res2.status}: ${body2.slice(0, 200)}`)
+    if (r2.ok) { console.log(`[sendMedia] OK via uc url`); return }
+    console.error(`[sendMedia] uc url failed ${r2.status}: ${(await r2.text()).slice(0, 200)}`)
+
+    // Attempt 3: download from Drive and send as base64
+    const driveRes = await fetch(`https://drive.usercontent.google.com/download?id=${driveFileId}&export=download&confirm=t`, {
+      redirect: 'follow', headers: { 'User-Agent': 'Mozilla/5.0', Accept: '*/*' },
+    })
+    if (!driveRes.ok) { console.error(`[sendMedia] Drive download failed: ${driveRes.status}`); return }
+    const buf = await driveRes.arrayBuffer()
+    const b64 = Buffer.from(buf).toString('base64')
+    console.log(`[sendMedia] Downloaded ${buf.byteLength}b — sending as base64`)
+    const r3 = await fetch(evUrl, {
+      method: 'POST', headers: evHeaders,
+      body: JSON.stringify({ number: jid, mediatype: 'video', media: b64, mimetype: 'video/mp4', fileName: 'video.mp4' }),
+    })
+    if (r3.ok) { console.log(`[sendMedia] OK via base64`); return }
+    console.error(`[sendMedia] All 3 attempts failed. Last: ${r3.status}: ${(await r3.text()).slice(0, 200)}`)
   } catch (err) {
     console.error('[sendMedia] Exception:', err)
   }
