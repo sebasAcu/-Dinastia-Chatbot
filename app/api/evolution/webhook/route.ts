@@ -232,14 +232,14 @@ export async function POST(req: NextRequest) {
       method: 'POST',
       headers: { Authorization: `Bearer ${cerebrasKey}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        model: 'gpt-oss-120b',
+        model: 'gemma-4-31b',
         messages: [
           { role: 'system', content: systemPrompt },
           ...historyMessages,
           { role: 'user', content: text },
         ],
-        max_tokens: 700,
-        temperature: 0.3,
+        max_tokens: 1000,
+        temperature: 0.1,
       }),
     })
 
