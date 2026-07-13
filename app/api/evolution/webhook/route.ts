@@ -58,19 +58,34 @@ async function sendEvolutionMessage(instance: string, jid: string, text: string)
 }
 
 async function sendEvolutionMedia(instance: string, jid: string, driveFileId: string): Promise<void> {
-  const mediaUrl = `https://lh3.googleusercontent.com/d/${driveFileId}`
-  console.log(`[sendMedia] fileId="${driveFileId}" url="${mediaUrl}"`)
+  // Download from Drive first — Evolution can't follow Drive's redirect chain
+  const downloadUrl = `https://drive.usercontent.google.com/download?id=${driveFileId}&export=download&authuser=0&confirm=t`
+  console.log(`[sendMedia] Downloading fileId="${driveFileId}"`)
   try {
+    const driveRes = await fetch(downloadUrl, { redirect: 'follow' })
+    if (!driveRes.ok) {
+      console.error(`[sendMedia] Drive download failed: ${driveRes.status}`)
+      return
+    }
+    const contentType = driveRes.headers.get('content-type') || 'video/mp4'
+    const isVideo = contentType.startsWith('video/') || contentType === 'application/octet-stream'
+    const mediatype = isVideo ? 'video' : 'image'
+    const mimetype = isVideo ? 'video/mp4' : 'image/jpeg'
+
+    const buffer = await driveRes.arrayBuffer()
+    const base64 = Buffer.from(buffer).toString('base64')
+    console.log(`[sendMedia] ${buffer.byteLength} bytes, type=${contentType}, sending as ${mediatype}`)
+
     const res = await fetch(`${EVOLUTION_URL}/message/sendMedia/${instance}`, {
       method: 'POST',
       headers: { apikey: EVOLUTION_KEY, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ number: jid, mediatype: 'image', media: mediaUrl, mimetype: 'image/jpeg' }),
+      body: JSON.stringify({ number: jid, mediatype, media: base64, mimetype, fileName: isVideo ? 'video.mp4' : 'image.jpg' }),
     })
     const body = await res.text()
     if (!res.ok) {
-      console.error(`[sendMedia] Failed status=${res.status} body=${body.slice(0, 500)}`)
+      console.error(`[sendMedia] Evolution failed status=${res.status} body=${body.slice(0, 500)}`)
     } else {
-      console.log(`[sendMedia] OK response=${body.slice(0, 200)}`)
+      console.log(`[sendMedia] OK`)
     }
   } catch (err) {
     console.error('[sendMedia] Exception:', err)
