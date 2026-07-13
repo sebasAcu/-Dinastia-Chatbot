@@ -57,44 +57,45 @@ async function sendEvolutionMessage(instance: string, jid: string, text: string)
   }
 }
 
-async function sendEvolutionMedia(instance: string, jid: string, driveFileId: string): Promise<void> {
-  console.log(`[sendMedia] fileId="${driveFileId}"`)
+async function sendEvolutionMedia(instance: string, jid: string, mediaRef: string): Promise<void> {
+  console.log(`[sendMedia] ref="${mediaRef.slice(0, 80)}"`)
   const evUrl = `${EVOLUTION_URL}/message/sendMedia/${instance}`
   const evHeaders = { apikey: EVOLUTION_KEY, 'Content-Type': 'application/json' }
 
+  // If mediaRef is a full URL, send it directly to Evolution
+  const isUrl = mediaRef.startsWith('http://') || mediaRef.startsWith('https://')
+  if (isUrl) {
+    const ext = mediaRef.split('.').pop()?.toLowerCase() || ''
+    const isVideo = ['mp4', 'mov', 'avi', 'mkv', 'webm'].includes(ext)
+    const mediatype = isVideo ? 'video' : 'image'
+    const mimetype = isVideo ? 'video/mp4' : 'image/jpeg'
+    const r = await fetch(evUrl, {
+      method: 'POST', headers: evHeaders,
+      body: JSON.stringify({ number: jid, mediatype, media: mediaRef, mimetype, fileName: isVideo ? 'video.mp4' : 'image.jpg' }),
+    })
+    if (r.ok) { console.log(`[sendMedia] OK via direct url`); return }
+    console.error(`[sendMedia] Direct url failed ${r.status}: ${(await r.text()).slice(0, 300)}`)
+    return
+  }
+
+  // Legacy: mediaRef is a Google Drive file ID — try multiple methods
+  const driveFileId = mediaRef
   try {
-    // Attempt 1: lh3 CDN URL with video type (direct, no redirect)
-    const lh3Url = `https://lh3.googleusercontent.com/d/${driveFileId}`
+    // Attempt 1: lh3 CDN URL
     const r1 = await fetch(evUrl, {
       method: 'POST', headers: evHeaders,
-      body: JSON.stringify({ number: jid, mediatype: 'video', media: lh3Url, mimetype: 'video/mp4', fileName: 'video.mp4' }),
+      body: JSON.stringify({ number: jid, mediatype: 'video', media: `https://lh3.googleusercontent.com/d/${driveFileId}`, mimetype: 'video/mp4', fileName: 'video.mp4' }),
     })
-    if (r1.ok) { console.log(`[sendMedia] OK via lh3+video`); return }
-    console.error(`[sendMedia] lh3+video failed ${r1.status}: ${(await r1.text()).slice(0, 200)}`)
+    if (r1.ok) { console.log(`[sendMedia] OK via lh3`); return }
+    console.error(`[sendMedia] lh3 failed ${r1.status}`)
 
-    // Attempt 2: drive.google.com uc URL with video type
-    const ucUrl = `https://drive.google.com/uc?id=${driveFileId}&export=download`
+    // Attempt 2: drive uc URL
     const r2 = await fetch(evUrl, {
       method: 'POST', headers: evHeaders,
-      body: JSON.stringify({ number: jid, mediatype: 'video', media: ucUrl, mimetype: 'video/mp4', fileName: 'video.mp4' }),
+      body: JSON.stringify({ number: jid, mediatype: 'video', media: `https://drive.google.com/uc?id=${driveFileId}&export=download`, mimetype: 'video/mp4', fileName: 'video.mp4' }),
     })
-    if (r2.ok) { console.log(`[sendMedia] OK via uc url`); return }
-    console.error(`[sendMedia] uc url failed ${r2.status}: ${(await r2.text()).slice(0, 200)}`)
-
-    // Attempt 3: download from Drive and send as base64
-    const driveRes = await fetch(`https://drive.usercontent.google.com/download?id=${driveFileId}&export=download&confirm=t`, {
-      redirect: 'follow', headers: { 'User-Agent': 'Mozilla/5.0', Accept: '*/*' },
-    })
-    if (!driveRes.ok) { console.error(`[sendMedia] Drive download failed: ${driveRes.status}`); return }
-    const buf = await driveRes.arrayBuffer()
-    const b64 = Buffer.from(buf).toString('base64')
-    console.log(`[sendMedia] Downloaded ${buf.byteLength}b — sending as base64`)
-    const r3 = await fetch(evUrl, {
-      method: 'POST', headers: evHeaders,
-      body: JSON.stringify({ number: jid, mediatype: 'video', media: b64, mimetype: 'video/mp4', fileName: 'video.mp4' }),
-    })
-    if (r3.ok) { console.log(`[sendMedia] OK via base64`); return }
-    console.error(`[sendMedia] All 3 attempts failed. Last: ${r3.status}: ${(await r3.text()).slice(0, 200)}`)
+    if (r2.ok) { console.log(`[sendMedia] OK via uc`); return }
+    console.error(`[sendMedia] uc failed ${r2.status} — Drive IDs are blocked. Host videos in Supabase Storage.`)
   } catch (err) {
     console.error('[sendMedia] Exception:', err)
   }
