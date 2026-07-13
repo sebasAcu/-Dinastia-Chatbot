@@ -2,7 +2,6 @@ import { NextRequest, NextResponse } from 'next/server'
 
 const EVOLUTION_URL = process.env.EVOLUTION_API_URL || ''
 const EVOLUTION_KEY = process.env.EVOLUTION_API_KEY || ''
-const GEMINI_KEY = process.env.GEMINI_API_KEY || ''
 const SB_URL = process.env.NEXT_PUBLIC_SUPABASE_URL!
 const SB_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY!
 const SB_HEADERS = { apikey: SB_KEY, Authorization: `Bearer ${SB_KEY}`, 'Content-Type': 'application/json' }
@@ -23,13 +22,22 @@ async function upsertConvState(chatId: string, clientId: string, data: Record<st
   await fetch(`${SB_URL}/rest/v1/conversation_states`, {
     method: 'POST',
     headers: { ...SB_HEADERS, Prefer: 'resolution=merge-duplicates,return=minimal' },
-    body: JSON.stringify({
-      chat_id: chatId,
-      client_id: clientId,
-      ...data,
-      updated_at: new Date().toISOString(),
-    }),
+    body: JSON.stringify({ chat_id: chatId, client_id: clientId, ...data, updated_at: new Date().toISOString() }),
   })
+}
+
+// Atomically claims a message. Returns false if already claimed by a concurrent duplicate webhook.
+async function claimMessage(chatId: string, clientId: string, msgId: string): Promise<boolean> {
+  const r = await fetch(`${SB_URL}/rest/v1/rpc/claim_message`, {
+    method: 'POST',
+    headers: SB_HEADERS,
+    body: JSON.stringify({ p_chat_id: chatId, p_client_id: clientId, p_msg_id: msgId }),
+  })
+  if (!r.ok) {
+    console.error('[claimMessage] RPC failed:', r.status, await r.text().catch(() => ''))
+    return true // On RPC error, proceed rather than silently drop
+  }
+  return (await r.json()) === true
 }
 
 // ── Evolution helpers ────────────────────────────────────────
@@ -51,13 +59,19 @@ async function sendEvolutionMessage(instance: string, jid: string, text: string)
 
 async function sendEvolutionMedia(instance: string, jid: string, driveFileId: string): Promise<void> {
   const mediaUrl = `https://lh3.googleusercontent.com/d/${driveFileId}`
+  console.log(`[sendMedia] fileId="${driveFileId}" url="${mediaUrl}"`)
   try {
     const res = await fetch(`${EVOLUTION_URL}/message/sendMedia/${instance}`, {
       method: 'POST',
       headers: { apikey: EVOLUTION_KEY, 'Content-Type': 'application/json' },
       body: JSON.stringify({ number: jid, mediatype: 'image', media: mediaUrl, mimetype: 'image/jpeg' }),
     })
-    if (!res.ok) console.error('[sendMedia] Failed:', res.status, await res.text())
+    const body = await res.text()
+    if (!res.ok) {
+      console.error(`[sendMedia] Failed status=${res.status} body=${body.slice(0, 500)}`)
+    } else {
+      console.log(`[sendMedia] OK response=${body.slice(0, 200)}`)
+    }
   } catch (err) {
     console.error('[sendMedia] Exception:', err)
   }
@@ -73,9 +87,14 @@ export async function POST(req: NextRequest) {
 
     if (!instance || !data) return NextResponse.json({ status: 'ignored' })
 
+    // Drop everything except new messages immediately — before any DB calls
+    if (event !== 'messages.upsert') return NextResponse.json({ status: 'ignored' })
+
     const fromMe: boolean = data?.key?.fromMe
     const jid: string = data?.key?.remoteJid
     const messageId: string = data?.key?.id || ''
+
+    if (!jid) return NextResponse.json({ status: 'empty' })
 
     // ── Find client ──────────────────────────────────────────
     const cols = 'id,nombre,groq_api_key,system_prompt,offhours_enabled,offhours_start,offhours_end,offhours_message,logs_enabled,state_machine_enabled,evolution_instance'
@@ -92,40 +111,16 @@ export async function POST(req: NextRequest) {
     }
     if (!client?.id) return NextResponse.json({ status: 'client_not_found' })
 
-    // Only process new message events
-    if (event !== 'messages.upsert') return NextResponse.json({ status: 'ignored' })
+    // Bot fully silenced when state machine is disabled
+    if (client.state_machine_enabled === false) return NextResponse.json({ status: 'disabled' })
 
-    // ── Human reply → pause conversation ────────────────────
-    // Check bot_msg_ids to distinguish bot echoes from real human replies
-    if (fromMe) {
-      if (jid) {
-        const state = await getConvState(jid, client.id)
-        const botMsgIds: string[] = state?.datos_recolectados?.bot_msg_ids || []
-        if (messageId && botMsgIds.includes(messageId)) {
-          console.log(`[Webhook] bot echo ignored msgId=${messageId} jid=${jid}`)
-          return NextResponse.json({ status: 'bot_echo_ignored' })
-        }
-        console.log(`[Webhook] fromMe human msg → setting pausado for ${jid}`)
-        await upsertConvState(jid, client.id, { estado: 'pausado' })
-      }
-      return NextResponse.json({ status: 'human_reply' })
-    }
+    // Ignore all fromMe messages (bot echoes from Evolution)
+    if (fromMe) return NextResponse.json({ status: 'bot_echo_ignored' })
 
     const text: string =
       data?.message?.conversation ||
       data?.message?.extendedTextMessage?.text ||
       ''
-
-    const MENU_PRINCIPAL =
-      'Buenas, es un placer poder servirle 😊\n' +
-      'Soy el asistente virtual de Portones Americanos y Elevadores YIREH\n' +
-      '¿En qué le puedo ayudar hoy?\n' +
-      '1️⃣ Portón nuevo\n' +
-      '2️⃣ Motor para portón existente\n' +
-      '3️⃣ Elevador\n' +
-      '4️⃣ Otros'
-
-    if (!jid) return NextResponse.json({ status: 'empty' })
 
     // ── Off-hours ────────────────────────────────────────────
     if (client.offhours_enabled) {
@@ -139,47 +134,41 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    const useMachine = client.state_machine_enabled !== false
-
-    // ── Conversation state ────────────────────────────────────
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    let convState: any = null
-    let estado = 'inicio'
-
-    if (useMachine) {
-      convState = await getConvState(jid, client.id)
-      if (!convState) {
-        await upsertConvState(jid, client.id, { estado: 'inicio', datos_recolectados: {} })
-        convState = { estado: 'inicio', datos_recolectados: {} }
-      }
-
-      // Deduplicate: Evolution can fire the same event more than once
-      if (messageId && convState.datos_recolectados?.last_msg_id === messageId) {
+    // ── Atomic deduplication ─────────────────────────────────
+    // DB-level atomic claim: only the first of N concurrent duplicate fires wins.
+    // The others return false here and never reach Groq — eliminating wasted tokens.
+    if (messageId) {
+      const claimed = await claimMessage(jid, client.id, messageId)
+      if (!claimed) {
+        console.log(`[Webhook] duplicate msgId=${messageId} — dropped`)
         return NextResponse.json({ status: 'duplicate' })
-      }
-
-      estado = convState.estado
-      console.log(`[Webhook] msg="${text.slice(0, 30)}" jid=${jid} estado=${estado} msgId=${messageId}`)
-
-      // Silence finalizado/pausado — never respond, never send menu
-      if (estado === 'pausado' || estado === 'finalizado') {
-        console.log(`[Webhook] Skipping — estado=${estado}`)
-        return NextResponse.json({ status: `skipped_${estado}` })
-      }
-
-      // Claim this message immediately so concurrent duplicate webhook fires
-      // see last_msg_id already set and return 'duplicate' before hitting Groq
-      if (messageId) {
-        await upsertConvState(jid, client.id, {
-          estado,
-          datos_recolectados: { ...(convState.datos_recolectados || {}), last_msg_id: messageId },
-        })
       }
     }
 
-    // Non-text messages (audio, stickers, etc.) → show menu only if conversation is active
+    // ── Conversation state ────────────────────────────────────
+    const convState = await getConvState(jid, client.id) ?? { estado: 'inicio', datos_recolectados: {} }
+    const estado: string = convState.estado
+
+    console.log(`[Webhook] msg="${text.slice(0, 30)}" estado=${estado} jid=${jid} msgId=${messageId}`)
+
+    if (estado === 'pausado' || estado === 'finalizado') {
+      console.log(`[Webhook] Skipping — estado=${estado}`)
+      return NextResponse.json({ status: `skipped_${estado}` })
+    }
+
+    // ── Non-text messages → show menu ─────────────────────────
+    const MENU_PRINCIPAL =
+      'Buenas, es un placer poder servirle 😊\n' +
+      'Soy el asistente virtual de Portones Americanos y Elevadores YIREH\n' +
+      '¿En qué le puedo ayudar hoy?\n' +
+      '1️⃣ Portón nuevo\n' +
+      '2️⃣ Motor para portón existente\n' +
+      '3️⃣ Elevador\n' +
+      '4️⃣ Otros'
+
     if (!text.trim()) {
-      const isMedia = data?.message?.imageMessage ||
+      const isMedia =
+        data?.message?.imageMessage ||
         data?.message?.audioMessage ||
         data?.message?.videoMessage ||
         data?.message?.stickerMessage ||
@@ -193,20 +182,16 @@ export async function POST(req: NextRequest) {
     }
 
     // ── System prompt ─────────────────────────────────────────
-    // The AI follows the system prompt naturally based on conversation history.
-    // [CONV_FIN] tag is appended by the AI when it sends the final message,
-    // so the code can mark the conversation as finished.
     const basePrompt = client.system_prompt || 'Eres un asistente útil.'
-    const systemPrompt = useMachine
-      ? basePrompt +
-        '\n\nCuando envíes el MENSAJE FINAL al cliente, añadí exactamente [CONV_FIN] al final de tu respuesta. El cliente nunca debe ver esa etiqueta.' +
-        '\n\nCuando quieras enviar una imagen al cliente, incluí exactamente la etiqueta [ENVIAR_MEDIA: FILE_ID] en tu respuesta, donde FILE_ID es el ID de Google Drive indicado en el prompt para esa imagen. Podés incluir varias etiquetas [ENVIAR_MEDIA:] en la misma respuesta. El cliente nunca verá esas etiquetas.'
-      : basePrompt
+    const systemPrompt =
+      basePrompt +
+      '\n\nCuando envíes el MENSAJE FINAL al cliente, añadí exactamente [CONV_FIN] al final de tu respuesta. El cliente nunca debe ver esa etiqueta.' +
+      '\n\nCuando quieras enviar una imagen al cliente, incluí exactamente la etiqueta [ENVIAR_MEDIA: FILE_ID] en tu respuesta, donde FILE_ID es el ID de Google Drive indicado en el prompt para esa imagen. Podés incluir varias etiquetas [ENVIAR_MEDIA:] en la misma respuesta. El cliente nunca verá esas etiquetas.'
 
-    // ── Conversation history ─────────────────────────────────
+    // ── Conversation history (last 6 exchanges) ──────────────
     let history: { user_message: string; bot_response: string }[] = []
     const rh = await fetch(
-      `${SB_URL}/rest/v1/message_logs?select=user_message,bot_response&client_id=eq.${client.id}&from_number=eq.${encodeURIComponent(jid)}&order=created_at.desc&limit=8`,
+      `${SB_URL}/rest/v1/message_logs?select=user_message,bot_response&client_id=eq.${client.id}&from_number=eq.${encodeURIComponent(jid)}&order=created_at.desc&limit=6`,
       { headers: SB_HEADERS, cache: 'no-store' }
     )
     if (rh.ok) history = await rh.json()
@@ -216,12 +201,13 @@ export async function POST(req: NextRequest) {
       { role: 'assistant', content: log.bot_response },
     ])
 
-    // ── Call Groq ─────────────────────────────────────────────
-    const groqRes = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+    // ── Call Cerebras (OpenAI-compatible, llama-3.3-70b) ─────
+    const cerebrasKey = process.env.CEREBRAS_API_KEY || client.groq_api_key || ''
+    const aiRes = await fetch('https://api.cerebras.ai/v1/chat/completions', {
       method: 'POST',
-      headers: { Authorization: `Bearer ${client.groq_api_key}`, 'Content-Type': 'application/json' },
+      headers: { Authorization: `Bearer ${cerebrasKey}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        model: 'llama-3.3-70b-versatile',
+        model: 'llama-3.3-70b',
         messages: [
           { role: 'system', content: systemPrompt },
           ...historyMessages,
@@ -232,19 +218,18 @@ export async function POST(req: NextRequest) {
       }),
     })
 
-    if (!groqRes.ok) {
-      const errText = await groqRes.text().catch(() => '(no body)')
-      console.error(`[Groq] FAILED status=${groqRes.status} body=${errText.slice(0, 300)}`)
-      return NextResponse.json({ status: 'groq_error' })
+    if (!aiRes.ok) {
+      const errText = await aiRes.text().catch(() => '(no body)')
+      console.error(`[Cerebras] FAILED status=${aiRes.status} body=${errText.slice(0, 400)}`)
+      return NextResponse.json({ status: 'ai_error' })
     }
-    const groqData = await groqRes.json()
-    const rawReply: string = groqData.choices?.[0]?.message?.content || ''
-    console.log(`[Groq] rawReply="${rawReply.slice(0, 200)}"`)
+    const aiData = await aiRes.json()
+    const rawReply: string = aiData.choices?.[0]?.message?.content || ''
+    console.log(`[Cerebras] rawReply="${rawReply.slice(0, 200)}"`)
 
-    // ── Parse tags ───────────────────────────────────────────
+    // ── Parse [CONV_FIN] and [ENVIAR_MEDIA:] tags ─────────────
     const isFinished = /\[CONV_FIN\]/i.test(rawReply)
 
-    // Extract [ENVIAR_MEDIA: file_id] tags
     const mediaIds: string[] = []
     const mediaTagRegex = /\[ENVIAR_MEDIA:\s*([^\]]+)\]/gi
     let mediaMatch
@@ -268,16 +253,12 @@ export async function POST(req: NextRequest) {
     if (cleanReply) botMsgId = await sendEvolutionMessage(instance, jid, cleanReply)
 
     // ── Update conversation state ────────────────────────────
-    if (useMachine) {
-      const prevDatos: Record<string, unknown> = convState?.datos_recolectados || {}
-      const prevBotIds: string[] = (prevDatos.bot_msg_ids as string[]) || []
-      const newBotIds = botMsgId ? [...prevBotIds.slice(-9), botMsgId] : prevBotIds
+    const prevDatos: Record<string, unknown> = convState.datos_recolectados || {}
 
-      await upsertConvState(jid, client.id, {
-        estado: isFinished ? 'finalizado' : 'en_progreso',
-        datos_recolectados: { ...prevDatos, last_msg_id: messageId, bot_msg_ids: newBotIds },
-      })
-    }
+    await upsertConvState(jid, client.id, {
+      estado: isFinished ? 'finalizado' : 'en_progreso',
+      datos_recolectados: { ...prevDatos, last_msg_id: messageId },
+    })
 
     // ── Log ──────────────────────────────────────────────────
     if (client.logs_enabled) {
