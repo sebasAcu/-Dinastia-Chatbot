@@ -240,7 +240,7 @@ export async function POST(req: NextRequest) {
       const gr = await fetch('https://generativelanguage.googleapis.com/v1beta/openai/chat/completions', {
         method: 'POST',
         headers: { Authorization: `Bearer ${geminiKey}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model: 'gemini-2.0-flash', messages: aiMessages, max_tokens: 1000, temperature: 0.1 }),
+        body: JSON.stringify({ model: 'gemini-flash-latest', messages: aiMessages, max_tokens: 1000, temperature: 0.1 }),
       })
       if (gr.ok) {
         const gd = await gr.json()
