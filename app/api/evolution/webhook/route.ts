@@ -141,7 +141,7 @@ export async function POST(req: NextRequest) {
     // Ignore all fromMe messages (bot echoes from Evolution)
     if (fromMe) return NextResponse.json({ status: 'bot_echo_ignored' })
 
-    const text: string =
+    let text: string =
       data?.message?.conversation ||
       data?.message?.extendedTextMessage?.text ||
       ''
@@ -171,7 +171,16 @@ export async function POST(req: NextRequest) {
 
     // ── Conversation state ────────────────────────────────────
     const convState = await getConvState(jid, client.id) ?? { estado: 'inicio', datos_recolectados: {} }
-    const estado: string = convState.estado
+    let estado: string = convState.estado
+
+    // If user sends a greeting while conversation is active, restart fresh.
+    // 'finalizado' is permanent — never reset back to 'inicio', not even by a greeting.
+    const isGreeting = /^\s*(hola|buenas|buenos|hey|hi|hello|ey|oye|holi|saludos|buen\s*d[ií]a|good\s*(morning|afternoon|evening))\b/i.test(text)
+    if (isGreeting && estado !== 'inicio' && estado !== 'finalizado') {
+      console.log(`[Webhook] Greeting detected, resetting estado ${estado}→inicio`)
+      await upsertConvState(jid, client.id, { estado: 'inicio', datos_recolectados: {} })
+      estado = 'inicio'
+    }
 
     console.log(`[Webhook] msg="${text.slice(0, 30)}" estado=${estado} jid=${jid} msgId=${messageId}`)
 
@@ -180,29 +189,19 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ status: `skipped_${estado}` })
     }
 
-    // ── Non-text messages → show menu ─────────────────────────
-    const MENU_PRINCIPAL =
-      'Buenas, es un placer poder servirle 😊\n' +
-      'Soy el asistente virtual de Portones Americanos y Elevadores YIREH\n' +
-      '¿En qué le puedo ayudar hoy?\n' +
-      '1️⃣ Portón nuevo\n' +
-      '2️⃣ Motor para portón existente\n' +
-      '3️⃣ Elevador\n' +
-      '4️⃣ Otros'
-
+    // ── Non-text messages: feed a placeholder so the AI handles it in-flow ──
+    // (previously this short-circuited with a hardcoded main menu regardless of
+    // conversation state, which derailed mid-flow chats and never got logged)
     if (!text.trim()) {
-      const isMedia =
-        data?.message?.imageMessage ||
-        data?.message?.audioMessage ||
-        data?.message?.videoMessage ||
-        data?.message?.stickerMessage ||
-        data?.message?.documentMessage ||
-        data?.message?.pttMessage
-      if (isMedia) {
-        await sendEvolutionMessage(instance, jid, MENU_PRINCIPAL)
-        return NextResponse.json({ status: 'non_text_menu' })
-      }
-      return NextResponse.json({ status: 'empty' })
+      const mediaType =
+        data?.message?.imageMessage ? 'una imagen' :
+        data?.message?.videoMessage ? 'un video' :
+        (data?.message?.audioMessage || data?.message?.pttMessage) ? 'un audio' :
+        data?.message?.stickerMessage ? 'un sticker' :
+        data?.message?.documentMessage ? 'un documento' :
+        null
+      if (!mediaType) return NextResponse.json({ status: 'empty' })
+      text = `[El cliente envió ${mediaType}, cuyo contenido no podés ver. Pedile que responda en texto.]`
     }
 
     // ── System prompt ─────────────────────────────────────────
@@ -210,7 +209,7 @@ export async function POST(req: NextRequest) {
     const systemPrompt =
       basePrompt +
       '\n\nCuando envíes el MENSAJE FINAL al cliente, añadí exactamente [CONV_FIN] al final de tu respuesta. El cliente nunca debe ver esa etiqueta.' +
-      '\n\nCuando quieras enviar una imagen al cliente, incluí exactamente la etiqueta [ENVIAR_MEDIA: FILE_ID] en tu respuesta, donde FILE_ID es el ID de Google Drive indicado en el prompt para esa imagen. Podés incluir varias etiquetas [ENVIAR_MEDIA:] en la misma respuesta. El cliente nunca verá esas etiquetas.'
+      '\n\nCuando quieras enviar una imagen o video al cliente, incluí exactamente la etiqueta [ENVIAR_MEDIA: URL] en tu respuesta, donde URL es la URL de Supabase Storage indicada en el prompt para ese archivo. Podés incluir varias etiquetas [ENVIAR_MEDIA:] en la misma respuesta. El cliente nunca verá esas etiquetas.'
 
     // ── Conversation history (skip when starting fresh to avoid confusing the model) ──
     let historyMessages: { role: string; content: string }[] = []
@@ -227,34 +226,38 @@ export async function POST(req: NextRequest) {
       ])
     }
 
-    // ── Call Cerebras (OpenAI-compatible, llama-3.3-70b) ─────
-    const cerebrasKey = process.env.CEREBRAS_API_KEY || client.groq_api_key || ''
-    const aiRes = await fetch('https://api.cerebras.ai/v1/chat/completions', {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${cerebrasKey}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model: 'gemma-4-31b',
-        messages: [
-          { role: 'system', content: systemPrompt },
-          ...historyMessages,
-          { role: 'user', content: text },
-        ],
-        max_tokens: 1000,
-        temperature: 0.1,
-      }),
-    })
+    // ── Call AI (Gemini only) ─────────────────────────────────
+    const geminiKey = process.env.GEMINI_API_KEY || ''
+    const aiMessages = [
+      { role: 'system', content: systemPrompt },
+      ...historyMessages,
+      { role: 'user', content: text },
+    ]
 
-    if (!aiRes.ok) {
-      const errText = await aiRes.text().catch(() => '(no body)')
-      console.error(`[Cerebras] FAILED status=${aiRes.status} body=${errText.slice(0, 400)}`)
-      return NextResponse.json({ status: 'ai_error' })
+    let rawReply = ''
+
+    if (geminiKey) {
+      const gr = await fetch('https://generativelanguage.googleapis.com/v1beta/openai/chat/completions', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${geminiKey}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model: 'gemini-2.0-flash', messages: aiMessages, max_tokens: 1000, temperature: 0.1 }),
+      })
+      if (gr.ok) {
+        const gd = await gr.json()
+        rawReply = gd.choices?.[0]?.message?.content || ''
+        console.log(`[Gemini] rawReply="${rawReply.slice(0, 200)}"`)
+      } else {
+        console.error(`[Gemini] FAILED ${gr.status}: ${(await gr.text().catch(() => '')).slice(0, 300)}`)
+      }
     }
-    const aiData = await aiRes.json()
-    const rawReply: string = aiData.choices?.[0]?.message?.content || ''
-    console.log(`[Cerebras] rawReply="${rawReply.slice(0, 200)}"`)
+
+    if (!rawReply) return NextResponse.json({ status: 'ai_error' })
+
 
     // ── Parse [CONV_FIN] and [ENVIAR_MEDIA:] tags ─────────────
-    const isFinished = /\[CONV_FIN\]/i.test(rawReply)
+    // Detect finish via tag OR via the final message text (in case AI forgets the tag)
+    const isFinished = /\[CONV_FIN\]/i.test(rawReply) ||
+      /Lo m[aá]s pronto posible nuestro asesor se pondr[aá]/i.test(rawReply)
 
     const mediaIds: string[] = []
     const mediaTagRegex = /\[ENVIAR_MEDIA:\s*([^\]]+)\]/gi
@@ -270,20 +273,26 @@ export async function POST(req: NextRequest) {
       .replace(/^["']|["']$/g, '')
       .trim()
 
-    // ── Send media then text ──────────────────────────────────
-    if (mediaIds.length > 0) console.log(`[Media] Sending ${mediaIds.length} image(s): ${mediaIds.join(', ')}`)
-    for (const fileId of mediaIds) {
+    // ── Send media (skip duplicates already sent this conversation) ──
+    const prevDatos: Record<string, unknown> = convState.datos_recolectados || {}
+    const sentMedia: string[] = Array.isArray(prevDatos.sent_media) ? prevDatos.sent_media as string[] : []
+    const newMediaIds = mediaIds.filter(id => !sentMedia.includes(id))
+
+    if (newMediaIds.length > 0) console.log(`[Media] Sending ${newMediaIds.length} video(s): ${newMediaIds.join(', ')}`)
+    if (mediaIds.length > newMediaIds.length) console.log(`[Media] Skipped ${mediaIds.length - newMediaIds.length} duplicate(s)`)
+    for (const fileId of newMediaIds) {
       await sendEvolutionMedia(instance, jid, fileId)
     }
+
     let botMsgId: string | null = null
     if (cleanReply) botMsgId = await sendEvolutionMessage(instance, jid, cleanReply)
 
     // ── Update conversation state ────────────────────────────
-    const prevDatos: Record<string, unknown> = convState.datos_recolectados || {}
+    const updatedSentMedia = Array.from(new Set(sentMedia.concat(newMediaIds)))
 
     await upsertConvState(jid, client.id, {
       estado: isFinished ? 'finalizado' : 'en_progreso',
-      datos_recolectados: { ...prevDatos, last_msg_id: messageId },
+      datos_recolectados: { ...prevDatos, last_msg_id: messageId, sent_media: updatedSentMedia },
     })
 
     // ── Log ──────────────────────────────────────────────────
