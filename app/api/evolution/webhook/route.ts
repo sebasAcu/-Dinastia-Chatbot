@@ -189,14 +189,18 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ status: `skipped_${estado}` })
     }
 
-    // ── Non-text messages: feed a placeholder so the AI handles it in-flow ──
+    // Audio/voice notes: stay silent, wait for the client to type instead.
+    if (data?.message?.audioMessage || data?.message?.pttMessage) {
+      return NextResponse.json({ status: 'audio_ignored' })
+    }
+
+    // ── Other non-text messages: feed a placeholder so the AI handles it in-flow ──
     // (previously this short-circuited with a hardcoded main menu regardless of
     // conversation state, which derailed mid-flow chats and never got logged)
     if (!text.trim()) {
       const mediaType =
         data?.message?.imageMessage ? 'una imagen' :
         data?.message?.videoMessage ? 'un video' :
-        (data?.message?.audioMessage || data?.message?.pttMessage) ? 'un audio' :
         data?.message?.stickerMessage ? 'un sticker' :
         data?.message?.documentMessage ? 'un documento' :
         null
