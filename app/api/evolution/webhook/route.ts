@@ -189,8 +189,18 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ status: `skipped_${estado}` })
     }
 
-    // Audio/voice notes: send the final message and permanently deactivate the chat.
-    if (data?.message?.audioMessage || data?.message?.pttMessage) {
+    // Any media (audio, image, video, sticker, document): send the final message
+    // and permanently deactivate the chat instead of trying to process it.
+    if (!text.trim()) {
+      const mediaType =
+        data?.message?.imageMessage ? '[imagen]' :
+        data?.message?.videoMessage ? '[video]' :
+        (data?.message?.audioMessage || data?.message?.pttMessage) ? '[audio]' :
+        data?.message?.stickerMessage ? '[sticker]' :
+        data?.message?.documentMessage ? '[documento]' :
+        null
+      if (!mediaType) return NextResponse.json({ status: 'empty' })
+
       const finalMsg = 'Lo más pronto posible nuestro asesor se pondrá en contacto con usted para brindarle la cotización. ¡Que tenga un excelente día! 😊'
       await sendEvolutionMessage(instance, jid, finalMsg)
       await upsertConvState(jid, client.id, {
@@ -204,27 +214,13 @@ export async function POST(req: NextRequest) {
           body: JSON.stringify({
             client_id: client.id,
             from_number: jid,
-            user_message: '[audio]',
+            user_message: mediaType,
             bot_response: finalMsg,
             status: 'sent',
           }),
         })
       }
-      return NextResponse.json({ status: 'audio_finalized' })
-    }
-
-    // ── Other non-text messages: feed a placeholder so the AI handles it in-flow ──
-    // (previously this short-circuited with a hardcoded main menu regardless of
-    // conversation state, which derailed mid-flow chats and never got logged)
-    if (!text.trim()) {
-      const mediaType =
-        data?.message?.imageMessage ? 'una imagen' :
-        data?.message?.videoMessage ? 'un video' :
-        data?.message?.stickerMessage ? 'un sticker' :
-        data?.message?.documentMessage ? 'un documento' :
-        null
-      if (!mediaType) return NextResponse.json({ status: 'empty' })
-      text = `[El cliente envió ${mediaType}, cuyo contenido no podés ver. Pedile que responda en texto.]`
+      return NextResponse.json({ status: 'media_finalized' })
     }
 
     // ── System prompt ─────────────────────────────────────────
