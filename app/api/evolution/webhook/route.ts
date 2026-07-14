@@ -189,9 +189,28 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ status: `skipped_${estado}` })
     }
 
-    // Audio/voice notes: stay silent, wait for the client to type instead.
+    // Audio/voice notes: send the final message and permanently deactivate the chat.
     if (data?.message?.audioMessage || data?.message?.pttMessage) {
-      return NextResponse.json({ status: 'audio_ignored' })
+      const finalMsg = 'Lo más pronto posible nuestro asesor se pondrá en contacto con usted para brindarle la cotización. ¡Que tenga un excelente día! 😊'
+      await sendEvolutionMessage(instance, jid, finalMsg)
+      await upsertConvState(jid, client.id, {
+        estado: 'finalizado',
+        datos_recolectados: convState.datos_recolectados || {},
+      })
+      if (client.logs_enabled) {
+        await fetch(`${SB_URL}/rest/v1/message_logs`, {
+          method: 'POST',
+          headers: { ...SB_HEADERS, Prefer: 'return=minimal' },
+          body: JSON.stringify({
+            client_id: client.id,
+            from_number: jid,
+            user_message: '[audio]',
+            bot_response: finalMsg,
+            status: 'sent',
+          }),
+        })
+      }
+      return NextResponse.json({ status: 'audio_finalized' })
     }
 
     // ── Other non-text messages: feed a placeholder so the AI handles it in-flow ──
