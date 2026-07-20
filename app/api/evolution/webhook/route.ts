@@ -138,8 +138,16 @@ export async function POST(req: NextRequest) {
     // Bot fully silenced when state machine is disabled
     if (client.state_machine_enabled === false) return NextResponse.json({ status: 'disabled' })
 
-    // Ignore all fromMe messages (bot echoes from Evolution)
-    if (fromMe) return NextResponse.json({ status: 'bot_echo_ignored' })
+    // fromMe = el dueño escribió a mano desde su WhatsApp (o eco del propio bot).
+    // Se toma como toma humana definitiva: el bot se apaga para ese chat para siempre.
+    if (fromMe) {
+      const existing = await getConvState(jid, client.id)
+      await upsertConvState(jid, client.id, {
+        estado: 'pausado',
+        datos_recolectados: existing?.datos_recolectados || {},
+      })
+      return NextResponse.json({ status: 'human_takeover' })
+    }
 
     let text: string =
       data?.message?.conversation ||
@@ -174,9 +182,9 @@ export async function POST(req: NextRequest) {
     let estado: string = convState.estado
 
     // If user sends a greeting while conversation is active, restart fresh.
-    // 'finalizado' is permanent — never reset back to 'inicio', not even by a greeting.
+    // 'finalizado' y 'pausado' son permanentes — nunca vuelven a 'inicio', ni con un saludo.
     const isGreeting = /^\s*(hola|buenas|buenos|hey|hi|hello|ey|oye|holi|saludos|buen\s*d[ií]a|good\s*(morning|afternoon|evening))\b/i.test(text)
-    if (isGreeting && estado !== 'inicio' && estado !== 'finalizado') {
+    if (isGreeting && estado !== 'inicio' && estado !== 'finalizado' && estado !== 'pausado') {
       console.log(`[Webhook] Greeting detected, resetting estado ${estado}→inicio`)
       await upsertConvState(jid, client.id, { estado: 'inicio', datos_recolectados: {} })
       estado = 'inicio'
