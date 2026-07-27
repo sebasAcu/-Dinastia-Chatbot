@@ -57,7 +57,7 @@ async function sendEvolutionMessage(instance: string, jid: string, text: string)
   }
 }
 
-async function sendEvolutionMedia(instance: string, jid: string, mediaRef: string): Promise<void> {
+async function sendEvolutionMedia(instance: string, jid: string, mediaRef: string): Promise<string | null> {
   console.log(`[sendMedia] ref="${mediaRef.slice(0, 80)}"`)
   const evUrl = `${EVOLUTION_URL}/message/sendMedia/${instance}`
   const evHeaders = { apikey: EVOLUTION_KEY, 'Content-Type': 'application/json' }
@@ -73,9 +73,13 @@ async function sendEvolutionMedia(instance: string, jid: string, mediaRef: strin
       method: 'POST', headers: evHeaders,
       body: JSON.stringify({ number: jid, mediatype, media: mediaRef, mimetype, fileName: isVideo ? 'video.mp4' : 'image.jpg' }),
     })
-    if (r.ok) { console.log(`[sendMedia] OK via direct url`); return }
+    if (r.ok) {
+      console.log(`[sendMedia] OK via direct url`)
+      const resData = await r.json().catch(() => null)
+      return resData?.key?.id || null
+    }
     console.error(`[sendMedia] Direct url failed ${r.status}: ${(await r.text()).slice(0, 300)}`)
-    return
+    return null
   }
 
   // Legacy: mediaRef is a Google Drive file ID — try multiple methods
@@ -86,7 +90,11 @@ async function sendEvolutionMedia(instance: string, jid: string, mediaRef: strin
       method: 'POST', headers: evHeaders,
       body: JSON.stringify({ number: jid, mediatype: 'video', media: `https://lh3.googleusercontent.com/d/${driveFileId}`, mimetype: 'video/mp4', fileName: 'video.mp4' }),
     })
-    if (r1.ok) { console.log(`[sendMedia] OK via lh3`); return }
+    if (r1.ok) {
+      console.log(`[sendMedia] OK via lh3`)
+      const resData = await r1.json().catch(() => null)
+      return resData?.key?.id || null
+    }
     console.error(`[sendMedia] lh3 failed ${r1.status}`)
 
     // Attempt 2: drive uc URL
@@ -94,11 +102,23 @@ async function sendEvolutionMedia(instance: string, jid: string, mediaRef: strin
       method: 'POST', headers: evHeaders,
       body: JSON.stringify({ number: jid, mediatype: 'video', media: `https://drive.google.com/uc?id=${driveFileId}&export=download`, mimetype: 'video/mp4', fileName: 'video.mp4' }),
     })
-    if (r2.ok) { console.log(`[sendMedia] OK via uc`); return }
+    if (r2.ok) {
+      console.log(`[sendMedia] OK via uc`)
+      const resData = await r2.json().catch(() => null)
+      return resData?.key?.id || null
+    }
     console.error(`[sendMedia] uc failed ${r2.status} — Drive IDs are blocked. Host videos in Supabase Storage.`)
   } catch (err) {
     console.error('[sendMedia] Exception:', err)
   }
+  return null
+}
+
+// Bot-sent message ids are remembered per chat so a later fromMe echo of that
+// same id can be told apart from a message the owner actually typed by hand.
+function mergeBotMsgIds(prevDatos: Record<string, unknown>, newIds: (string | null)[]): string[] {
+  const prevIds = Array.isArray(prevDatos.bot_msg_ids) ? (prevDatos.bot_msg_ids as string[]) : []
+  return Array.from(new Set([...prevIds, ...newIds.filter((id): id is string => !!id)])).slice(-30)
 }
 
 // ── POST handler ─────────────────────────────────────────────
@@ -138,10 +158,19 @@ export async function POST(req: NextRequest) {
     // Bot fully silenced when state machine is disabled
     if (client.state_machine_enabled === false) return NextResponse.json({ status: 'disabled' })
 
-    // fromMe = el dueño escribió a mano desde su WhatsApp (o eco del propio bot).
-    // Se toma como toma humana definitiva: el bot se apaga para ese chat para siempre.
+    // fromMe dispara tanto para el eco de los mensajes que el propio bot mandó por
+    // Evolution como para un mensaje que el dueño escribió a mano desde su WhatsApp.
+    // Si el id coincide con uno que el bot mismo mandó, es el eco: se ignora sin tocar
+    // el estado. Si no coincide con ninguno, es una respuesta humana real: se apaga
+    // el bot para ese chat para siempre.
     if (fromMe) {
       const existing = await getConvState(jid, client.id)
+      const botIds: string[] = Array.isArray(existing?.datos_recolectados?.bot_msg_ids)
+        ? existing.datos_recolectados.bot_msg_ids
+        : []
+      if (messageId && botIds.includes(messageId)) {
+        return NextResponse.json({ status: 'bot_echo_ignored' })
+      }
       await upsertConvState(jid, client.id, {
         estado: 'pausado',
         datos_recolectados: existing?.datos_recolectados || {},
@@ -161,7 +190,15 @@ export async function POST(req: NextRequest) {
       const [sh, sm] = (client.offhours_start || '09:00').split(':').map(Number)
       const [eh, em] = (client.offhours_end || '18:00').split(':').map(Number)
       if (total < sh * 60 + sm || total >= eh * 60 + em) {
-        await sendEvolutionMessage(instance, jid, client.offhours_message)
+        const offhoursMsgId = await sendEvolutionMessage(instance, jid, client.offhours_message)
+        const existing = await getConvState(jid, client.id)
+        await upsertConvState(jid, client.id, {
+          estado: existing?.estado || 'inicio',
+          datos_recolectados: {
+            ...(existing?.datos_recolectados || {}),
+            bot_msg_ids: mergeBotMsgIds(existing?.datos_recolectados || {}, [offhoursMsgId]),
+          },
+        })
         return NextResponse.json({ status: 'offhours' })
       }
     }
@@ -210,10 +247,14 @@ export async function POST(req: NextRequest) {
       if (!mediaType) return NextResponse.json({ status: 'empty' })
 
       const finalMsg = 'Lo más pronto posible nuestro asesor se pondrá en contacto con usted para brindarle la cotización. ¡Que tenga un excelente día! 😊'
-      await sendEvolutionMessage(instance, jid, finalMsg)
+      const finalMsgId = await sendEvolutionMessage(instance, jid, finalMsg)
+      const prevDatosMedia = convState.datos_recolectados || {}
       await upsertConvState(jid, client.id, {
         estado: 'finalizado',
-        datos_recolectados: convState.datos_recolectados || {},
+        datos_recolectados: {
+          ...prevDatosMedia,
+          bot_msg_ids: mergeBotMsgIds(prevDatosMedia, [finalMsgId]),
+        },
       })
       if (client.logs_enabled) {
         await fetch(`${SB_URL}/rest/v1/message_logs`, {
@@ -307,8 +348,9 @@ export async function POST(req: NextRequest) {
 
     if (newMediaIds.length > 0) console.log(`[Media] Sending ${newMediaIds.length} video(s): ${newMediaIds.join(', ')}`)
     if (mediaIds.length > newMediaIds.length) console.log(`[Media] Skipped ${mediaIds.length - newMediaIds.length} duplicate(s)`)
+    const sentMediaMsgIds: (string | null)[] = []
     for (const fileId of newMediaIds) {
-      await sendEvolutionMedia(instance, jid, fileId)
+      sentMediaMsgIds.push(await sendEvolutionMedia(instance, jid, fileId))
     }
 
     let botMsgId: string | null = null
@@ -319,7 +361,12 @@ export async function POST(req: NextRequest) {
 
     await upsertConvState(jid, client.id, {
       estado: isFinished ? 'finalizado' : 'en_progreso',
-      datos_recolectados: { ...prevDatos, last_msg_id: messageId, sent_media: updatedSentMedia },
+      datos_recolectados: {
+        ...prevDatos,
+        last_msg_id: messageId,
+        sent_media: updatedSentMedia,
+        bot_msg_ids: mergeBotMsgIds(prevDatos, [...sentMediaMsgIds, botMsgId]),
+      },
     })
 
     // ── Log ──────────────────────────────────────────────────
