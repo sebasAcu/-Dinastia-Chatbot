@@ -13,6 +13,15 @@ export async function POST(req: NextRequest) {
 
   const body = await req.json().catch(() => ({}))
 
+  if (body?.delete_chat_id) {
+    const chatId = String(body.delete_chat_id)
+    const r = await fetch(
+      `${SB_URL}/rest/v1/conversation_states?chat_id=eq.${encodeURIComponent(chatId)}`,
+      { method: 'DELETE', headers: SB_HEADERS }
+    )
+    return NextResponse.json({ ok: r.ok, status: r.status })
+  }
+
   if (body?.reset_chat_id) {
     const chatId = String(body.reset_chat_id)
     const r = await fetch(
