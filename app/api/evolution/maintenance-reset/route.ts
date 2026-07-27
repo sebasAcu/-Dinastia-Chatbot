@@ -12,6 +12,21 @@ export async function POST(req: NextRequest) {
   }
 
   const body = await req.json().catch(() => ({}))
+
+  if (body?.reset_chat_id) {
+    const chatId = String(body.reset_chat_id)
+    const r = await fetch(
+      `${SB_URL}/rest/v1/conversation_states?chat_id=eq.${encodeURIComponent(chatId)}`,
+      {
+        method: 'PATCH',
+        headers: { ...SB_HEADERS, Prefer: 'return=representation' },
+        body: JSON.stringify({ estado: 'inicio', datos_recolectados: {} }),
+      }
+    )
+    const updated = r.ok ? await r.json() : null
+    return NextResponse.json({ ok: r.ok, status: r.status, updated })
+  }
+
   const enabled = body?.enabled !== false
 
   const r = await fetch(`${SB_URL}/rest/v1/clients?evolution_instance=eq.portones-yireh`, {
