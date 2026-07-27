@@ -21,10 +21,22 @@ export async function POST(req: NextRequest) {
   })
   const updated = r.ok ? await r.json() : null
 
+  // Also remove the synthetic chat_ids used to diagnose this bug — not real customers.
+  const testJids = ['50600000000@s.whatsapp.net', '50611111111@s.whatsapp.net']
+  for (const jid of testJids) {
+    await fetch(`${SB_URL}/rest/v1/conversation_states?chat_id=eq.${encodeURIComponent(jid)}`, {
+      method: 'DELETE', headers: SB_HEADERS,
+    })
+    await fetch(`${SB_URL}/rest/v1/message_logs?from_number=eq.${encodeURIComponent(jid)}`, {
+      method: 'DELETE', headers: SB_HEADERS,
+    })
+  }
+
   return NextResponse.json({
     ok: r.ok,
     status: r.status,
     updated_count: Array.isArray(updated) ? updated.length : null,
     updated_chat_ids: Array.isArray(updated) ? updated.map((row: { chat_id: string }) => row.chat_id) : null,
+    test_jids_cleaned: testJids,
   })
 }
