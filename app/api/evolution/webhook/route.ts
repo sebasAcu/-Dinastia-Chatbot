@@ -140,6 +140,13 @@ export async function POST(req: NextRequest) {
 
     if (!jid) return NextResponse.json({ status: 'empty' })
 
+    // Test mode: when set, the bot only ever talks to this one number — every
+    // other chat is ignored before touching the DB or the AI, no exceptions.
+    const TEST_ONLY_NUMBER = process.env.TEST_ONLY_NUMBER || ''
+    if (TEST_ONLY_NUMBER && jid.split('@')[0] !== TEST_ONLY_NUMBER) {
+      return NextResponse.json({ status: 'test_mode_ignored' })
+    }
+
     // ── Find client ──────────────────────────────────────────
     const cols = 'id,nombre,groq_api_key,system_prompt,offhours_enabled,offhours_start,offhours_end,offhours_message,logs_enabled,state_machine_enabled,evolution_instance'
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
