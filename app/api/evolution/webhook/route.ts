@@ -258,8 +258,10 @@ export async function POST(req: NextRequest) {
 
     // A chat the bot has never actually replied to might still have real
     // WhatsApp history (an old contact, or the owner texting by hand pre-bot).
-    // Only send the automated welcome to genuinely fresh contacts.
-    if (!botHasRepliedBefore) {
+    // Only send the automated welcome to genuinely fresh contacts. Skipped
+    // entirely in test mode — the test number's own history shouldn't block
+    // the person actually testing the bot.
+    if (!botHasRepliedBefore && !TEST_ONLY_NUMBER) {
       const hasHistory = await chatHasPriorHistory(instance, jid)
       if (hasHistory) {
         await upsertConvState(jid, client.id, {
