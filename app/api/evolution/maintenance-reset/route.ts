@@ -11,10 +11,13 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   }
 
+  const body = await req.json().catch(() => ({}))
+  const enabled = body?.enabled !== false
+
   const r = await fetch(`${SB_URL}/rest/v1/clients?evolution_instance=eq.portones-yireh`, {
     method: 'PATCH',
     headers: { ...SB_HEADERS, Prefer: 'return=representation' },
-    body: JSON.stringify({ state_machine_enabled: false }),
+    body: JSON.stringify({ state_machine_enabled: enabled }),
   })
   const updated = r.ok ? await r.json() : null
 
