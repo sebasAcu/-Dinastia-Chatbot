@@ -249,13 +249,23 @@ export async function POST(req: NextRequest) {
     // ── Conversation state ────────────────────────────────────
     const rawConvState = await getConvState(jid, client.id)
 
-    // A chat the bot has literally never touched before might still have real
+    // claim_message above already seeds a bare conversation_states row for any
+    // chat it has never seen, so a null check here would never fire. The real
+    // signal for "the bot has never actually replied here" is whether it has
+    // ever sent a message to this chat — tracked in bot_msg_ids.
+    const botHasRepliedBefore = Array.isArray(rawConvState?.datos_recolectados?.bot_msg_ids)
+      && rawConvState.datos_recolectados.bot_msg_ids.length > 0
+
+    // A chat the bot has never actually replied to might still have real
     // WhatsApp history (an old contact, or the owner texting by hand pre-bot).
     // Only send the automated welcome to genuinely fresh contacts.
-    if (rawConvState === null) {
+    if (!botHasRepliedBefore) {
       const hasHistory = await chatHasPriorHistory(instance, jid)
       if (hasHistory) {
-        await upsertConvState(jid, client.id, { estado: 'pausado', datos_recolectados: {} })
+        await upsertConvState(jid, client.id, {
+          estado: 'pausado',
+          datos_recolectados: rawConvState?.datos_recolectados || {},
+        })
         return NextResponse.json({ status: 'skipped_prior_whatsapp_history' })
       }
     }
