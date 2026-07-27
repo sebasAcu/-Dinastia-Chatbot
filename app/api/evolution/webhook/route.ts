@@ -121,6 +121,31 @@ function mergeBotMsgIds(prevDatos: Record<string, unknown>, newIds: (string | nu
   return Array.from(new Set([...prevIds, ...newIds.filter((id): id is string => !!id)])).slice(-30)
 }
 
+// Chats the bot has never touched (no conversation_states row) can still have
+// real WhatsApp history — an old contact, or the owner chatting by hand before
+// the bot existed. On failure we fail open (assume no history) so a genuinely
+// new lead never gets silently dropped.
+async function chatHasPriorHistory(instance: string, jid: string): Promise<boolean> {
+  try {
+    const r = await fetch(`${EVOLUTION_URL}/chat/findMessages/${instance}`, {
+      method: 'POST',
+      headers: { apikey: EVOLUTION_KEY, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ where: { key: { remoteJid: jid } }, limit: 1 }),
+    })
+    if (!r.ok) {
+      console.error('[chatHasPriorHistory] Failed:', r.status, await r.text().catch(() => ''))
+      return false
+    }
+    const data = await r.json()
+    const records = data?.messages?.records ?? data?.records ?? (Array.isArray(data) ? data : [])
+    console.log(`[chatHasPriorHistory] jid=${jid} records=${Array.isArray(records) ? records.length : 'n/a'} raw=${JSON.stringify(data).slice(0, 300)}`)
+    return Array.isArray(records) && records.length > 0
+  } catch (err) {
+    console.error('[chatHasPriorHistory] Exception:', err)
+    return false
+  }
+}
+
 // ── POST handler ─────────────────────────────────────────────
 export async function POST(req: NextRequest) {
   try {
@@ -222,7 +247,20 @@ export async function POST(req: NextRequest) {
     }
 
     // ── Conversation state ────────────────────────────────────
-    const convState = await getConvState(jid, client.id) ?? { estado: 'inicio', datos_recolectados: {} }
+    const rawConvState = await getConvState(jid, client.id)
+
+    // A chat the bot has literally never touched before might still have real
+    // WhatsApp history (an old contact, or the owner texting by hand pre-bot).
+    // Only send the automated welcome to genuinely fresh contacts.
+    if (rawConvState === null) {
+      const hasHistory = await chatHasPriorHistory(instance, jid)
+      if (hasHistory) {
+        await upsertConvState(jid, client.id, { estado: 'pausado', datos_recolectados: {} })
+        return NextResponse.json({ status: 'skipped_prior_whatsapp_history' })
+      }
+    }
+
+    const convState = rawConvState ?? { estado: 'inicio', datos_recolectados: {} }
     let estado: string = convState.estado
 
     // If user sends a greeting while conversation is active, restart fresh.
