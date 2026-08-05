@@ -26,6 +26,29 @@ async function upsertConvState(chatId: string, clientId: string, data: Record<st
   })
 }
 
+// Writes the post-AI-reply state only if the row is still NOT pausado/finalizado.
+// A human takeover (fromMe handler) or a media-finalize can land on this same row
+// while a slow Gemini call is in flight; this WHERE clause is enforced atomically
+// by Postgres, so whichever write actually "owns" a silence state can never be
+// clobbered by a slower request that started earlier. Returns false when the
+// conditional update matched no row, meaning someone else already silenced this chat.
+async function finalizeReplyState(chatId: string, clientId: string, data: Record<string, unknown>): Promise<boolean> {
+  const r = await fetch(
+    `${SB_URL}/rest/v1/conversation_states?chat_id=eq.${encodeURIComponent(chatId)}&client_id=eq.${clientId}&estado=not.in.(pausado,finalizado)`,
+    {
+      method: 'PATCH',
+      headers: { ...SB_HEADERS, Prefer: 'return=representation' },
+      body: JSON.stringify({ ...data, updated_at: new Date().toISOString() }),
+    }
+  )
+  if (!r.ok) {
+    console.error('[finalizeReplyState] PATCH failed:', r.status, await r.text().catch(() => ''))
+    return true // fail open on infra error — don't silently strand the conversation
+  }
+  const rows = await r.json().catch(() => [])
+  return Array.isArray(rows) && rows.length > 0
+}
+
 // Atomically claims a message. Returns false if already claimed by a concurrent duplicate webhook.
 async function claimMessage(chatId: string, clientId: string, msgId: string): Promise<boolean> {
   const r = await fetch(`${SB_URL}/rest/v1/rpc/claim_message`, {
@@ -378,6 +401,14 @@ export async function POST(req: NextRequest) {
 
     if (!rawReply) return NextResponse.json({ status: 'ai_error' })
 
+    // Gemini can take a few seconds. If the owner took over this chat by hand
+    // (or it got finalized) while we were waiting, do not send the AI's reply
+    // at all — that's exactly the "bot suddenly throws the menu mid human chat" bug.
+    const stateAfterAi = await getConvState(jid, client.id)
+    if (stateAfterAi?.estado === 'pausado' || stateAfterAi?.estado === 'finalizado') {
+      console.log(`[Webhook] Aborting AI reply — estado became ${stateAfterAi.estado} while Gemini was thinking`)
+      return NextResponse.json({ status: `aborted_${stateAfterAi.estado}` })
+    }
 
     // ── Parse [CONV_FIN] and [ENVIAR_MEDIA:] tags ─────────────
     // Detect finish via tag OR via the final message text (in case AI forgets the tag)
@@ -413,10 +444,10 @@ export async function POST(req: NextRequest) {
     let botMsgId: string | null = null
     if (cleanReply) botMsgId = await sendEvolutionMessage(instance, jid, cleanReply)
 
-    // ── Update conversation state ────────────────────────────
+    // ── Update conversation state (no-op if someone silenced this chat while we sent) ──
     const updatedSentMedia = Array.from(new Set(sentMedia.concat(newMediaIds)))
 
-    await upsertConvState(jid, client.id, {
+    const applied = await finalizeReplyState(jid, client.id, {
       estado: isFinished ? 'finalizado' : 'en_progreso',
       datos_recolectados: {
         ...prevDatos,
@@ -425,6 +456,9 @@ export async function POST(req: NextRequest) {
         bot_msg_ids: mergeBotMsgIds(prevDatos, [...sentMediaMsgIds, botMsgId]),
       },
     })
+    if (!applied) {
+      console.log(`[Webhook] Reply was sent but state write skipped — chat got silenced concurrently`)
+    }
 
     // ── Log ──────────────────────────────────────────────────
     if (client.logs_enabled) {
