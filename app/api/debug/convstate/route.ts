@@ -13,6 +13,20 @@ export async function GET(req: NextRequest) {
   }
   const { searchParams } = new URL(req.url)
 
+  if (searchParams.get('all') === '1') {
+    const ar = await fetch(
+      `${SB_URL}/rest/v1/message_logs?select=from_number,user_message,bot_response,created_at&order=created_at.desc&limit=30`,
+      { headers: SB_HEADERS, cache: 'no-store' }
+    )
+    const allLogs = await ar.json()
+    const csr = await fetch(
+      `${SB_URL}/rest/v1/conversation_states?select=chat_id,estado,updated_at&order=updated_at.desc&limit=30`,
+      { headers: SB_HEADERS, cache: 'no-store' }
+    )
+    const allStates = await csr.json()
+    return NextResponse.json({ allLogs, allStates })
+  }
+
   const testNumber = process.env.TEST_ONLY_NUMBER || ''
   if (!testNumber) return NextResponse.json({ status: 'no_test_number_set' })
   const jid = `${testNumber}@s.whatsapp.net`
