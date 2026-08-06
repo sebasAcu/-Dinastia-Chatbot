@@ -5,9 +5,12 @@ const SB_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY!
 const SB_HEADERS = { apikey: SB_KEY, Authorization: `Bearer ${SB_KEY}`, 'Content-Type': 'application/json' }
 
 // Temporary debug endpoint, scoped to TEST_ONLY_NUMBER only. Remove after testing.
-// Auth is handled by middleware.ts (next-auth session cookie) — this path isn't
-// in its exclusion list, so an unauthenticated request never reaches this code.
+// Excluded from the next-auth middleware (api/debug) so it can be called headlessly
+// with DEBUG_KEY, no browser session needed.
 export async function GET(req: NextRequest) {
+  if (req.headers.get('x-debug-key') !== process.env.DEBUG_KEY) {
+    return NextResponse.json({ status: 'forbidden' }, { status: 403 })
+  }
   const { searchParams } = new URL(req.url)
 
   const testNumber = process.env.TEST_ONLY_NUMBER || ''
