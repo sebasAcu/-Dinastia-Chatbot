@@ -1,5 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server'
 
+// The batch debounce wait (2s) stacks on top of the Gemini call and media
+// sends, so the default function timeout leaves too little margin.
+export const maxDuration = 30
+
 const EVOLUTION_URL = process.env.EVOLUTION_API_URL || ''
 const EVOLUTION_KEY = process.env.EVOLUTION_API_KEY || ''
 const SB_URL = process.env.NEXT_PUBLIC_SUPABASE_URL!
@@ -47,6 +51,85 @@ async function finalizeReplyState(chatId: string, clientId: string, data: Record
   }
   const rows = await r.json().catch(() => [])
   return Array.isArray(rows) && rows.length > 0
+}
+
+// ── Message batching ─────────────────────────────────────────
+// WhatsApp users often fire off 2-3 short messages in a row instead of one.
+// Without this, each message triggers its own independent AI call reading the
+// same stale context, racing to reply — the customer gets two contradictory
+// answers and the conversation state ends up wherever the slower one landed.
+// Every incoming message queues its text here; the first one in a burst
+// becomes the "leader" (via batch_locks), waits briefly, then drains and
+// answers once for everything that piled up meanwhile. Followers just queue
+// and exit immediately — the leader picks them up.
+const BATCH_WINDOW_MS = 2000
+const STALE_LOCK_MS = 15_000
+
+async function insertPendingBatchMessage(chatId: string, clientId: string, text: string): Promise<void> {
+  await fetch(`${SB_URL}/rest/v1/pending_batch_messages`, {
+    method: 'POST',
+    headers: { ...SB_HEADERS, Prefer: 'return=minimal' },
+    body: JSON.stringify({ chat_id: chatId, client_id: clientId, text }),
+  })
+}
+
+// batch_locks has a (chat_id, client_id) primary key, so the INSERT itself is
+// the atomic leader-election: Postgres guarantees only one concurrent insert
+// for the same pair can succeed. A stale lock (leader crashed mid-flight) is
+// reclaimed after STALE_LOCK_MS so a chat never gets stuck waiting forever.
+async function tryAcquireBatchLock(chatId: string, clientId: string): Promise<boolean> {
+  const claim = async () => {
+    const r = await fetch(`${SB_URL}/rest/v1/batch_locks`, {
+      method: 'POST',
+      headers: { ...SB_HEADERS, Prefer: 'return=minimal' },
+      body: JSON.stringify({ chat_id: chatId, client_id: clientId }),
+    })
+    return r.status
+  }
+
+  const status = await claim()
+  if (status === 201) return true
+  if (status !== 409) {
+    console.error('[tryAcquireBatchLock] Unexpected status:', status)
+    return true // fail open rather than deadlock the chat
+  }
+
+  const lr = await fetch(
+    `${SB_URL}/rest/v1/batch_locks?chat_id=eq.${encodeURIComponent(chatId)}&client_id=eq.${clientId}`,
+    { headers: SB_HEADERS, cache: 'no-store' }
+  )
+  const rows = lr.ok ? await lr.json() : []
+  const lockedAt = rows?.[0]?.locked_at ? new Date(rows[0].locked_at).getTime() : 0
+  if (!lockedAt || Date.now() - lockedAt < STALE_LOCK_MS) return false
+
+  await fetch(
+    `${SB_URL}/rest/v1/batch_locks?chat_id=eq.${encodeURIComponent(chatId)}&client_id=eq.${clientId}`,
+    { method: 'DELETE', headers: SB_HEADERS }
+  )
+  return (await claim()) === 201
+}
+
+async function releaseBatchLock(chatId: string, clientId: string): Promise<void> {
+  await fetch(
+    `${SB_URL}/rest/v1/batch_locks?chat_id=eq.${encodeURIComponent(chatId)}&client_id=eq.${clientId}`,
+    { method: 'DELETE', headers: SB_HEADERS }
+  )
+}
+
+async function drainPendingMessages(chatId: string, clientId: string): Promise<string> {
+  await new Promise((resolve) => setTimeout(resolve, BATCH_WINDOW_MS))
+  const r = await fetch(
+    `${SB_URL}/rest/v1/pending_batch_messages?chat_id=eq.${encodeURIComponent(chatId)}&client_id=eq.${clientId}&order=created_at.asc`,
+    { headers: SB_HEADERS, cache: 'no-store' }
+  )
+  const rows: { id: number; text: string }[] = r.ok ? await r.json() : []
+  if (rows.length === 0) return ''
+  const ids = rows.map((row) => row.id)
+  await fetch(`${SB_URL}/rest/v1/pending_batch_messages?id=in.(${ids.join(',')})`, {
+    method: 'DELETE',
+    headers: SB_HEADERS,
+  })
+  return rows.map((row) => row.text).join('\n')
 }
 
 // Atomically claims a message. Returns false if already claimed by a concurrent duplicate webhook.
@@ -351,6 +434,19 @@ export async function POST(req: NextRequest) {
       }
       return NextResponse.json({ status: 'media_finalized' })
     }
+
+    // ── Batch rapid-fire messages from the same customer ─────
+    // See helper comments above. Followers exit here; the leader waits, drains
+    // everything that arrived, and continues below with the combined text.
+    await insertPendingBatchMessage(jid, client.id, text)
+    const isBatchLeader = await tryAcquireBatchLock(jid, client.id)
+    if (!isBatchLeader) {
+      return NextResponse.json({ status: 'queued_for_batch' })
+    }
+    const combinedText = await drainPendingMessages(jid, client.id)
+    await releaseBatchLock(jid, client.id)
+    if (!combinedText) return NextResponse.json({ status: 'empty' })
+    text = combinedText
 
     // ── System prompt ─────────────────────────────────────────
     const basePrompt = client.system_prompt || 'Eres un asistente útil.'
