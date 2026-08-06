@@ -17,9 +17,10 @@ export async function GET(req: NextRequest) {
   if (!testNumber) return NextResponse.json({ status: 'no_test_number_set' })
   const jid = `${testNumber}@s.whatsapp.net`
 
-  const cr = await fetch(`${SB_URL}/rest/v1/clients?select=id,nombre&limit=1`, { headers: SB_HEADERS, cache: 'no-store' })
+  const cr = await fetch(`${SB_URL}/rest/v1/clients?select=id,nombre,evolution_instance&limit=1`, { headers: SB_HEADERS, cache: 'no-store' })
   const clients = await cr.json()
   const clientId = clients?.[0]?.id
+  const evolutionInstance = clients?.[0]?.evolution_instance
 
   const sr = await fetch(
     `${SB_URL}/rest/v1/conversation_states?chat_id=eq.${encodeURIComponent(jid)}&client_id=eq.${clientId}`,
@@ -41,5 +42,5 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ status: 'reset_done', jid, clientId })
   }
 
-  return NextResponse.json({ jid, clientId, state, recentLogs: logs })
+  return NextResponse.json({ jid, clientId, evolutionInstance, state, recentLogs: logs })
 }
