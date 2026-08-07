@@ -29,7 +29,7 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ allLogs, allStates })
   }
 
-  const testNumber = process.env.TEST_ONLY_NUMBER || ''
+  const testNumber = searchParams.get('number') || process.env.TEST_ONLY_NUMBER || ''
   if (!testNumber) return NextResponse.json({ status: 'no_test_number_set' })
   const jid = `${testNumber}@s.whatsapp.net`
 
