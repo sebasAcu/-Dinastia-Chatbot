@@ -411,14 +411,24 @@ export async function POST(req: NextRequest) {
 
       const finalMsg = 'Lo más pronto posible nuestro asesor se pondrá en contacto con usted para brindarle la cotización. ¡Que tenga un excelente día! 😊'
       const finalMsgId = await sendEvolutionMessage(instance, jid, finalMsg)
-      const prevDatosMedia = convState.datos_recolectados || {}
-      await upsertConvState(jid, client.id, {
+      // Re-read right before writing: a text message from the same customer sent
+      // moments earlier may still be batching (see below) and could write its own
+      // bot_msg_ids/sent_media right around now — merging onto the stale snapshot
+      // captured at the top of this request would silently drop that data.
+      // finalizeReplyState also refuses to clobber a pausado/finalizado written
+      // concurrently (e.g. a human takeover landing in this same narrow window).
+      const freshMediaState = await getConvState(jid, client.id)
+      const prevDatosMedia = freshMediaState?.datos_recolectados || {}
+      const appliedMedia = await finalizeReplyState(jid, client.id, {
         estado: 'finalizado',
         datos_recolectados: {
           ...prevDatosMedia,
           bot_msg_ids: mergeBotMsgIds(prevDatosMedia, [finalMsgId]),
         },
       })
+      if (!appliedMedia) {
+        console.log(`[Webhook] Media reply sent but state write skipped — chat already pausado/finalizado`)
+      }
       if (client.logs_enabled) {
         await fetch(`${SB_URL}/rest/v1/message_logs`, {
           method: 'POST',
@@ -526,7 +536,9 @@ export async function POST(req: NextRequest) {
       .trim()
 
     // ── Send media (skip duplicates already sent this conversation) ──
-    const prevDatos: Record<string, unknown> = convState.datos_recolectados || {}
+    // Based on stateAfterAi (read moments ago, right above) rather than the
+    // snapshot from the top of the request — same reasoning as the media path.
+    const prevDatos: Record<string, unknown> = stateAfterAi?.datos_recolectados || {}
     const sentMedia: string[] = Array.isArray(prevDatos.sent_media) ? prevDatos.sent_media as string[] : []
     const newMediaIds = mediaIds.filter(id => !sentMedia.includes(id))
 
